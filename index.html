@@ -173,7 +173,7 @@ function beginZero(){leveling=false;base=null;zeroing=true;zeroBuf=[];zeroNoiseB
 function loop(){
   if(!running)return;
   const adv=totalSamples-lastTotal;lastTotal=totalSamples;
-  if(adv<sr*0.3){filled=0;if(zeroing){zeroStart=performance.now();zeroBuf=[];}
+  if(adv<sr*0.1){filled=0;if(zeroing){zeroStart=performance.now();zeroBuf=[];}   // 0.1s: real stalls only (loop runs at 250-500 ms)
     $('state').className='state zero';$('state').textContent='resyncing…';setTimeout(loop,500);return;}
   const need=Math.min(filled,ringLen),x=new Float64Array(need);
   for(let i=0;i<need;i++)x[i]=ring[(ringPos-need+i+ringLen)%ringLen];
