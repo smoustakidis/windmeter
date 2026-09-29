@@ -1,0 +1,419 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Acoustic Wind Meter</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#0c1311; --panel:#121c19; --panel2:#16211d; --edge:#213029; --edge2:#2c4238;
+  --fg:#eef4f1; --dim:#7d938a; --faint:#4d6459;
+  --accent:#37c9a6; --warn:#e2b155; --bad:#e07a5a; --track:#1b2823;
+  color-scheme:dark;
+  --sans:'IBM Plex Sans',system-ui,Arial,sans-serif;
+  --mono:'IBM Plex Mono',ui-monospace,monospace;
+  font-family:var(--sans);
+}
+*{box-sizing:border-box}
+html,body{min-height:100%}
+body{background:var(--bg);color:var(--fg);margin:0}
+.app{min-height:100%;max-width:600px;margin:0 auto;display:flex;flex-direction:column;
+  padding:12px 16px 24px;gap:11px}
+.hd{display:flex;align-items:center;justify-content:space-between}
+.hd .ttl{font-size:15px;font-weight:600}
+.hd .ttl span{color:var(--dim);font-weight:400;font-size:12px;display:block;margin-top:1px}
+.dot{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.8px}
+.dot i{width:8px;height:8px;border-radius:50%;background:var(--faint)}
+.dot.live i{background:var(--accent);box-shadow:0 0 0 4px rgba(55,201,166,.15)}
+.center{display:flex;flex-direction:column;align-items:center;gap:12px}
+.gwrap{position:relative;width:min(44vw,170px);aspect-ratio:1}
+svg{width:100%;height:100%;display:block}
+.gval{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}
+.gval .num{font-family:var(--mono);font-size:40px;font-weight:500;line-height:.9;font-variant-numeric:tabular-nums}
+.gval .un{font-size:12px;color:var(--dim);letter-spacing:.5px}
+.state{font-size:12px;font-weight:600;letter-spacing:1.4px;text-transform:uppercase;color:var(--accent)}
+.state.light{color:var(--warn)} .state.flow{color:var(--bad)} .state.sat{color:var(--bad)} .state.idle{color:var(--faint)} .state.zero{color:var(--warn)}
+.strip{width:100%;flex-shrink:0;display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--edge);
+  border:1px solid var(--edge);border-radius:12px;overflow:hidden}
+.cell{background:var(--panel);padding:10px 8px 12px;text-align:center;min-height:56px}
+.cell .k{font-size:9.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.6px}
+.cell .v{font-family:var(--mono);font-size:15px;font-weight:500;margin-top:3px;font-variant-numeric:tabular-nums}
+canvas{width:100%;height:66px;flex-shrink:0;background:var(--panel);border:1px solid var(--edge);border-radius:12px;display:block}
+.go{appearance:none;border:none;border-radius:13px;font-family:var(--sans);font-size:17px;font-weight:600;
+  padding:15px;cursor:pointer;background:var(--accent);color:#052019;letter-spacing:.3px}
+.go.stop{background:var(--bad);color:#25090a}
+.tools{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.tools button{appearance:none;font-family:var(--sans);border:1px solid var(--edge2);background:var(--panel2);
+  color:var(--fg);font-size:12.5px;font-weight:500;padding:11px 6px;border-radius:10px;cursor:pointer}
+.tools button:active{background:var(--panel)}
+.cfg{display:flex;align-items:center;gap:9px;font-size:11px;color:var(--dim);
+  text-transform:uppercase;letter-spacing:.6px}
+.cfg[hidden]{display:none}
+.cfg select{flex:1;min-width:0;background:var(--panel2);color:var(--fg);border:1px solid var(--edge2);
+  border-radius:10px;padding:10px 11px;font-family:var(--sans);font-size:12.5px;letter-spacing:0;text-transform:none}
+.note{background:var(--panel);border:1px solid var(--edge);border-left:3px solid var(--warn);
+  border-radius:0 10px 10px 0;padding:11px 13px;font-size:12.5px;line-height:1.5}
+.note code{background:#0a1210;padding:1px 6px;border-radius:5px;color:var(--accent);font-family:var(--mono)}
+.hint{font-size:11px;color:var(--faint);text-align:center;line-height:1.5}
+</style>
+
+<div class="app">
+  <div class="hd">
+    <div class="ttl">Acoustic Wind Meter<span>ultrasonic scintillation &middot; single phone</span></div>
+    <div class="dot" id="statusdot"><i></i><span id="statustxt">idle</span></div>
+  </div>
+
+  <div class="center">
+    <div class="gwrap">
+      <svg viewBox="0 0 200 200" aria-hidden="true">
+        <path d="M40 168 A80 80 0 1 1 160 168" fill="none" stroke="var(--track)" stroke-width="12" stroke-linecap="round"/>
+        <path id="arc" d="M40 168 A80 80 0 1 1 160 168" fill="none" stroke="var(--accent)" stroke-width="12" stroke-linecap="round"/>
+      </svg>
+      <div class="gval">
+        <div class="num" id="reading">--</div>
+        <div class="un">m/s est.</div>
+      </div>
+    </div>
+    <div class="state idle" id="state">idle</div>
+    <div class="strip">
+      <div class="cell"><div class="k">index</div><div class="v" id="idx">--</div></div>
+      <div class="cell"><div class="k">HF band</div><div class="v" id="hflf">--</div></div>
+      <div class="cell"><div class="k">carrier</div><div class="v" id="carr">--</div></div>
+      <div class="cell"><div class="k">logged</div><div class="v" id="nlog">0</div></div>
+    </div>
+    <canvas id="spark" width="564" height="66"></canvas>
+  </div>
+
+  <div class="cfg"><label for="mode">mode</label><select id="mode">
+    <option value="measure">Measure — this phone emits + hears</option>
+    <option value="listen">Listen / RX — another device emits</option>
+    <option value="emit">Emit tones — TX (2nd device)</option>
+  </select></div>
+  <div class="cfg" id="cfgrow" hidden><label for="micsel">mic</label><select id="micsel"></select></div>
+  <div class="cfg" id="txrow" hidden><label for="txvol">vol</label><input type="range" id="txvol" min="2" max="60" value="18" style="flex:1"></div>
+  <button id="go" class="go">Start</button>
+  <div class="tools">
+    <button id="zero">Re-zero calm</button>
+    <button id="calib">Calibrate m/s</button>
+    <button id="dl">Export CSV</button>
+    <button id="clr">Clear log</button>
+  </div>
+  <div id="note" class="note" hidden></div>
+  <div class="hint" id="calibnote">on Start it measures 5 s of calm as zero &middot; keep still</div>
+</div>
+
+<script>
+const TONES=[19000,20000,21200,22000];              // raised to 19–22 kHz: above voice, whistling and sibilants (~ inaudible/unproducible by mouth)
+const NF=[19500,20600,21600];                       // off-tone probes (nothing emitted here) → ambient-sound reference
+const LF=[1,5], HF=[20,80], DEC=64, WIN_S=4, ZERO_S=5, SPAN=17, DEAD=3;
+const NOISE_R=3, CARR_JUMP=3, SPREAD_MAX=12, LF_GATE=12;   // sound-rejection thresholds (LF/VLF spike over calm = sound → hold)
+const SCINT_W=1.5, ADAPT=0.03, CALM_V=0.3;                 // bistatic: scintillation weight, baseline drift-tracking rate, calm threshold
+const CAL_KEY="windmeter_cal_v2", LOG_KEY="windmeter_log_v2", MIC_KEY="windmeter_mic";
+const ARC_LEN=377;
+const TARGET_CARR=-30, LEVEL_S=4, G_MIN=0.002, G_MAX=0.7, LEVEL_MAX_S=14;   // auto-level: drive carrier to ~-30 dBFS (more headroom for weak high-freq emission)
+let ac,mic,proc,src,gain,oscs=[],running=false,wakeLock=null;
+let ring,ringLen,ringPos=0,filled=0,sr=48000,totalSamples=0,lastTotal=0;
+let hist=[],log=[],last;
+let base=null, zeroing=false, zeroBuf=[], zeroStart=0;
+let leveling=false, levelStart=0, levelBegin=0;
+let noiseFloor=null, zeroNoiseBuf=[], lastCarr=null;
+let lfFloor=null, vlfFloor=null, zeroLfBuf=[], zeroVlfBuf=[];
+let carrFloor=null, zeroCarrBuf=[], lastRel=null, vSmoothBuf=[], cfBuf=[], scintFloor=null;
+let chosenMic=null;
+let listenMode=false;
+let cal={slope:0.30,custom:false};
+const $=id=>document.getElementById(id);
+try{chosenMic=localStorage.getItem(MIC_KEY)||null;}catch(e){}
+try{const s=localStorage.getItem(CAL_KEY);if(s)cal=JSON.parse(s);}catch(e){}
+try{const s=localStorage.getItem(LOG_KEY);if(s)log=JSON.parse(s)||[];}catch(e){}
+$('nlog').textContent=log.length;calibNote();
+$('arc').style.strokeDasharray=ARC_LEN;$('arc').style.strokeDashoffset=ARC_LEN;
+
+function fft(re,im){const n=re.length;
+  for(let i=1,j=0;i<n;i++){let b=n>>1;for(;j&b;b>>=1)j^=b;j^=b;
+    if(i<j){[re[i],re[j]]=[re[j],re[i]];[im[i],im[j]]=[im[j],im[i]];}}
+  for(let len=2;len<=n;len<<=1){const ang=-2*Math.PI/len,wr=Math.cos(ang),wi=Math.sin(ang);
+    for(let i=0;i<n;i+=len){let cr=1,ci=0;for(let k=0;k<len/2;k++){const ur=re[i+k],ui=im[i+k];
+      const vr=re[i+k+len/2]*cr-im[i+k+len/2]*ci,vi=re[i+k+len/2]*ci+im[i+k+len/2]*cr;
+      re[i+k]=ur+vr;im[i+k]=ui+vi;re[i+k+len/2]=ur-vr;im[i+k+len/2]=ui-vi;
+      const ncr=cr*wr-ci*wi;ci=cr*wi+ci*wr;cr=ncr;}}}}
+function toneEnv(x,f){const N=x.length,fsd=sr/DEC,M=Math.floor(N/DEC),env=new Float64Array(M);
+  // Hann-weighted integration → narrower band, −31 dB sidelobes (rejects off-tone ambient sound)
+  const w=new Float64Array(DEC);let ws=0;for(let k=0;k<DEC;k++){w[k]=0.5-0.5*Math.cos(2*Math.PI*k/(DEC-1));ws+=w[k];}
+  for(let m=0;m<M;m++){let si=0,sq=0;for(let k=0;k<DEC;k++){const n=m*DEC+k,a=2*Math.PI*f*n/sr;
+    si+=w[k]*x[n]*Math.cos(a);sq-=w[k]*x[n]*Math.sin(a);}env[m]=Math.hypot(si/ws,sq/ws);}return {env,fsd};}
+function hfPower(env,fsd){const n=env.length;let mean=0;for(let i=0;i<n;i++)mean+=env[i];mean/=n;
+  let P=1;while(P<n)P<<=1;const re=new Float64Array(P),im=new Float64Array(P);
+  for(let i=0;i<n;i++){const wv=0.5-0.5*Math.cos(2*Math.PI*i/(n-1));re[i]=(env[i]-mean)*wv;}   // absolute HF fluctuation power
+  fft(re,im);const df=fsd/P;let hi=0;
+  for(let k=1;k<P/2;k++){const fr=k*df;if(fr>=HF[0]&&fr<HF[1])hi+=re[k]*re[k]+im[k]*im[k];}return hi;}
+function noiseHF(x){const nv=[];for(const nf of NF){const {env,fsd}=toneEnv(x,nf);nv.push(hfPower(env,fsd));}
+  nv.sort((a,b)=>a-b);return nv[nv.length>>1];}
+function fastCarrier(x){                              // carrier level over the last ~0.35 s → near real-time (for bistatic)
+  const n=Math.min(x.length,Math.floor(0.35*sr)),off=x.length-n;let best=-999;
+  for(const f of TONES){let si=0,sq=0;for(let i=0;i<n;i++){const a=2*Math.PI*f*(off+i)/sr;si+=x[off+i]*Math.cos(a);sq-=x[off+i]*Math.sin(a);}
+    const db=20*Math.log10(Math.hypot(si/n,sq/n)+1e-12);if(db>best)best=db;}
+  return best;}
+function metrics(env,fsd){const n=env.length;let mean=0;for(let i=0;i<n;i++)mean+=env[i];mean/=n;
+  const carrDb=20*Math.log10(mean+1e-12);let P=1;while(P<n)P<<=1;
+  const re=new Float64Array(P),im=new Float64Array(P);
+  for(let i=0;i<n;i++){const w=0.5-0.5*Math.cos(2*Math.PI*i/(n-1));re[i]=(env[i]/mean-1)*w;}
+  fft(re,im);const df=fsd/P;let lo=0,hi=0,vlf=0,mid=0;
+  for(let k=1;k<P/2;k++){const fr=k*df,pw=re[k]*re[k]+im[k]*im[k];
+    if(fr>=0.2&&fr<2)vlf+=pw;                       // slow drift (AGC/level pumping, breathing)
+    if(fr>=LF[0]&&fr<LF[1])lo+=pw;
+    if(fr>=5&&fr<20)mid+=pw;                         // mid flicker
+    if(fr>=HF[0]&&fr<HF[1])hi+=pw;}
+  return {hflf:10*Math.log10(hi/(lo+1e-15)+1e-9),carrDb,hi,lo,vlf,mid};}
+const med=a=>{if(!a.length)return 0;a=a.slice().sort((x,y)=>x-y);return a[a.length>>1];};
+const std=a=>{if(a.length<2)return 0;const m=a.reduce((x,y)=>x+y,0)/a.length;return Math.sqrt(a.reduce((s,y)=>s+(y-m)*(y-m),0)/a.length);};
+function setStatus(live,txt){$('statusdot').className='dot'+(live?' live':'');$('statustxt').textContent=txt;}
+function beginLevel(){leveling=true;levelStart=performance.now();levelBegin=performance.now();zeroing=false;base=null;
+  $('state').className='state zero';$('state').textContent='leveling…';$('reading').textContent='--';}
+function beginZero(){leveling=false;base=null;zeroing=true;zeroBuf=[];zeroNoiseBuf=[];noiseFloor=null;lastCarr=null;zeroLfBuf=[];zeroVlfBuf=[];lfFloor=null;vlfFloor=null;zeroCarrBuf=[];carrFloor=null;vSmoothBuf=[];cfBuf=[];scintFloor=null;zeroStart=performance.now();
+  $('state').className='state zero';$('reading').textContent='--';}
+function loop(){
+  if(!running)return;
+  const adv=totalSamples-lastTotal;lastTotal=totalSamples;
+  if(adv<sr*0.3){filled=0;if(zeroing){zeroStart=performance.now();zeroBuf=[];}
+    $('state').className='state zero';$('state').textContent='resyncing…';setTimeout(loop,500);return;}
+  const need=Math.min(filled,ringLen),x=new Float64Array(need);
+  for(let i=0;i<need;i++)x[i]=ring[(ringPos-need+i+ringLen)%ringLen];
+
+  if(listenMode){                                    // LIGHT path: only the fast carrier → real-time, no CPU build-up
+    const cf=fastCarrier(x);
+    $('carr').textContent=isFinite(cf)?cf.toFixed(0):'--';
+    if(!isFinite(cf)||cf<-60){$('reading').textContent='--';$('hflf').textContent='--';$('state').className='state idle';$('state').textContent='no signal';$('calibnote').textContent='no tone — move closer to the emitter or raise its volume';setTimeout(loop,300);return;}
+    last=cf;$('hflf').textContent=cf.toFixed(0);
+    if(zeroing){
+      zeroCarrBuf.push(cf);if(zeroCarrBuf.length>16)zeroCarrBuf.shift();
+      const el=(performance.now()-zeroStart)/1000,w=zeroCarrBuf.slice(-8);
+      const spread=w.length>=8?(Math.max(...w)-Math.min(...w)):99;
+      $('state').className='state zero';$('state').textContent='zeroing…';
+      $('calibnote').textContent='baseline carrier '+cf.toFixed(0)+' dBFS — hold still, no wind ('+Math.round(el)+'s)';
+      if((el>=4&&spread<2.5)||el>=20){carrFloor=med(w);scintFloor=std(w);zeroing=false;}
+      setTimeout(loop,300);return;
+    }
+    cfBuf.push(cf);if(cfBuf.length>8)cfBuf.shift();          // ~2 s of fast-carrier samples
+    const scint=std(cfBuf);                                  // #2 scintillation: turbulence makes the carrier flicker
+    const scintExc=scintFloor!==null?Math.max(0,scint-scintFloor):0;
+    const drop=carrFloor!==null?(carrFloor-cf):0;            // mean beam drop (wind scatters the beam)
+    const relDrop=Math.max(0,drop-DEAD);
+    const sig=relDrop + SCINT_W*scintExc;                    // combined wind signal
+    const v = cal.custom ? Math.max(0,cal.slope*sig) : sig*0.30;
+    lastRel=sig;
+    vSmoothBuf.push(v);if(vSmoothBuf.length>2)vSmoothBuf.shift();
+    const vShow=vSmoothBuf.reduce((a,b)=>a+b,0)/vSmoothBuf.length;
+    if(carrFloor!==null && vShow<CALM_V){carrFloor += ADAPT*(cf-carrFloor);}   // #1 drift-tracking auto-zero (only while calm)
+    const idx=Math.max(0,Math.min(100,Math.round(vShow/8*100)));
+    $('reading').textContent=vShow.toFixed(1);$('idx').textContent=idx;
+    $('arc').style.strokeDashoffset=ARC_LEN*(1-idx/100);
+    let st='calm',lbl='calm';if(vShow>2){st='flow';lbl='flow';}else if(vShow>0.6){st='light';lbl='light';}
+    $('state').className='state '+st;$('state').textContent=lbl;
+    const col=st==='flow'?'var(--bad)':st==='light'?'var(--warn)':'var(--accent)';$('arc').setAttribute('stroke',col);
+    hist.push(idx);if(hist.length>188)hist.shift();drawSpark(col);
+    log.push({t:Date.now(),hflf:0,rel:+sig.toFixed(2),idx,v:+v.toFixed(2),carr:+cf.toFixed(1),nz:0,spr:+scint.toFixed(2),vlf:0,lf:0,mid:+drop.toFixed(2),hf:0});
+    if(log.length>6000)log=log.slice(-5000);
+    if(log.length%10===0)persist();$('nlog').textContent=log.length;
+    setTimeout(loop,250);return;
+  }
+
+  let carrs=[],hfs=[],his=[],los=[],vlfs=[],mids=[];
+  for(const f of TONES){const {env,fsd}=toneEnv(x,f);const m=metrics(env,fsd);
+    carrs.push(m.carrDb);if(m.carrDb>-55){hfs.push(m.hflf);his.push(m.hi);los.push(m.lo);vlfs.push(m.vlf);mids.push(m.mid);}}
+  let hflfMed=null,hfspread=0;
+  if(hfs.length){hfs.sort((a,b)=>a-b);hflfMed=hfs[hfs.length>>1];hfspread=hfs[hfs.length-1]-hfs[0];}  // kept for reference/log
+  const hfdb=his.length?10*Math.log10(med(his)+1e-15):0;   // HF-band flicker (20–80 Hz), median across tones
+  const lfdb=los.length?10*Math.log10(med(los)+1e-15):0;
+  const vlfdb=vlfs.length?10*Math.log10(med(vlfs)+1e-15):0;
+  const middb=mids.length?10*Math.log10(med(mids)+1e-15):0;
+  const best = his.length? hfdb : null;   // WIND METRIC = HF absolute flicker: sound barely reaches it (~0.9σ), turbulence raises it
+  const carr=Math.max(...carrs);
+  const carrFast=fastCarrier(x);                      // short-window carrier (fast response for bistatic)
+  const carrJump=(lastCarr!==null&&isFinite(carr))?Math.abs(carr-lastCarr):0;
+  if(isFinite(carr))lastCarr=carr;
+  const nHF=noiseHF(x);                                        // ambient sound energy at off-tone probes
+  $('carr').textContent=isFinite(carr)?carr.toFixed(0):'--';   // always show carrier (key diagnostic)
+  if(isFinite(carr)&&carr>-24){$('calibnote').textContent='⚠ carrier hot ('+carr.toFixed(0)+' dBFS) — lower media volume until ~ -30 (else readings invert)';}
+  else if(!cal.custom){$('calibnote').textContent='carrier '+(isFinite(carr)?carr.toFixed(0):'--')+' dBFS · aim ~ -30 · fan should raise HF band';}
+  if(best===null){$('reading').textContent='--';$('state').className='state idle';$('state').textContent='no tone';setTimeout(loop,500);return;}
+  last=best;$('hflf').textContent=best.toFixed(1);
+
+  if(leveling){                                      // auto-drive playback gain to hit ~-30 dBFS carrier
+    if(isFinite(carr)&&gain){
+      const err=TARGET_CARR-carr;                    // dB we still need to move
+      gain.gain.value=Math.max(G_MIN,Math.min(G_MAX,gain.gain.value*Math.pow(10,err/40)));
+    }
+    const el=(performance.now()-levelStart)/1000, left=Math.ceil(LEVEL_S-el);
+    $('state').textContent='leveling '+Math.max(0,left);
+    $('calibnote').textContent='auto-setting volume · carrier '+(isFinite(carr)?carr.toFixed(0):'--')+' → '+TARGET_CARR+' dBFS';
+    const tot=(performance.now()-levelBegin)/1000;
+    if(el>=LEVEL_S && (( isFinite(carr) && carr<-24) || tot>LEVEL_MAX_S)){beginZero();}  // proceed once unsaturated, or give up waiting (weak signal)
+    else if(el>=LEVEL_S){levelStart=performance.now();}           // still hot: keep leveling
+    setTimeout(loop,500);return;
+  }
+
+  if(zeroing){                                       // wait until HF/LF has SETTLED, then capture calm
+    zeroBuf.push(best);if(zeroBuf.length>14)zeroBuf.shift();     // rolling ~7 s  (best = HF band)
+    zeroNoiseBuf.push(nHF);if(zeroNoiseBuf.length>14)zeroNoiseBuf.shift();
+    zeroLfBuf.push(lfdb);if(zeroLfBuf.length>14)zeroLfBuf.shift();
+    zeroVlfBuf.push(vlfdb);if(zeroVlfBuf.length>14)zeroVlfBuf.shift();
+    if(isFinite(carrFast)){zeroCarrBuf.push(carrFast);if(zeroCarrBuf.length>14)zeroCarrBuf.shift();}
+    const el=(performance.now()-zeroStart)/1000;
+    const w=zeroBuf.slice(-8);
+    const spread=w.length>=8?(Math.max(...w)-Math.min(...w)):99;
+    $('state').textContent='zeroing…';
+    $('calibnote').textContent='finding stable calm — keep still, NO wind, NO sound ('+Math.round(el)+'s, spread '+(spread<99?spread.toFixed(0):'—')+' dB)';
+    if((el>=6 && spread<3) || el>=30){                          // flat for ~4 s, or 30 s cap
+      const s=w.slice().sort((a,b)=>a-b);base=s[s.length>>1];   // calm HF floor
+      const ns=zeroNoiseBuf.slice().sort((a,b)=>a-b);noiseFloor=ns[ns.length>>1];
+      lfFloor=med(zeroLfBuf);vlfFloor=med(zeroVlfBuf);          // calm LF/VLF floors (for the sound gate)
+      carrFloor=med(zeroCarrBuf);                                // calm carrier level (bistatic wind = drop below this)
+      zeroing=false;}
+    setTimeout(loop,500);return;
+  }
+  const soundLF = (lfFloor!==null && (lfdb>lfFloor+LF_GATE || vlfdb>vlfFloor+LF_GATE));  // sound dumps energy into slow LF/VLF
+  const pumping = (carrJump>CARR_JUMP);                                                   // loud sound jolted the mic gain
+  if(!listenMode && (soundLF||pumping)){                                                  // bistatic RX: wind itself moves LF/carrier — don't gate it
+    $('state').className='state sat';$('state').textContent='sound — hold';
+    $('calibnote').textContent='sound rejected'+(soundLF?' · LF +'+Math.max(lfdb-lfFloor,vlfdb-vlfFloor).toFixed(0)+'dB':'')+(pumping?' · carrier jump '+carrJump.toFixed(0)+'dB':'');
+    setTimeout(loop,500);return;                                                 // hold — do not update/log while sound is present
+  }
+  let rel;
+  if(listenMode && carrFloor!==null){ rel = carrFloor - carrFast; }    // bistatic RX: wind SCATTERS the beam → carrier drops (sound can't touch 19-22 kHz); fast window = near real-time
+  else { const b = base!==null? base : best; rel = best - b; }          // single-device: wind RAISES HF flicker
+  const relEff = Math.abs(rel)<=DEAD ? 0 : rel - Math.sign(rel)*DEAD;   // deadband suppresses calm jitter
+  const v = cal.custom ? Math.max(0,cal.slope*relEff) : Math.max(0,relEff)*0.30;   // only wind-ward changes count
+  lastRel = rel;
+  const SM = listenMode?2:4;                                            // lighter smoothing in RX (carrier is fast) → responsive
+  vSmoothBuf.push(v); if(vSmoothBuf.length>SM) vSmoothBuf.shift();
+  const vShow = vSmoothBuf.reduce((a,b)=>a+b,0)/vSmoothBuf.length;
+  const idx=Math.max(0,Math.min(100,Math.round(vShow/8*100)));
+  $('reading').textContent=vShow.toFixed(1);$('idx').textContent=idx;
+  $('arc').style.strokeDashoffset=ARC_LEN*(1-idx/100);
+  let st='calm',lbl='calm';
+  if(vShow>2){st='flow';lbl='flow';}else if(vShow>0.6){st='light';lbl='light';}
+  $('state').className='state '+st;$('state').textContent=lbl;
+  const col=st==='flow'?'var(--bad)':st==='light'?'var(--warn)':'var(--accent)';
+  $('arc').setAttribute('stroke',col);
+  hist.push(idx);if(hist.length>188)hist.shift();drawSpark(col);
+  log.push({t:Date.now(),hflf:+(hflfMed!=null?hflfMed:0).toFixed(2),rel:+rel.toFixed(2),idx,v:+v.toFixed(2),carr:+carr.toFixed(1),nz:+(noiseFloor?(nHF/noiseFloor):0).toFixed(1),spr:+hfspread.toFixed(1),vlf:+vlfdb.toFixed(1),lf:+lfdb.toFixed(1),mid:+middb.toFixed(1),hf:+hfdb.toFixed(1)});
+  if(log.length>6000)log=log.slice(-5000);
+  if(log.length%10===0)persist();$('nlog').textContent=log.length;
+  setTimeout(loop,500);
+}
+function drawSpark(col){const c=$('spark'),g=c.getContext('2d'),W=c.width,H=c.height;
+  g.clearRect(0,0,W,H);g.strokeStyle='#1b2823';g.lineWidth=1;
+  for(let y=0;y<=100;y+=50){const yy=H-y/100*(H-6)-3;g.beginPath();g.moveTo(0,yy);g.lineTo(W,yy);g.stroke();}
+  if(hist.length<2)return;g.strokeStyle=col||'#37c9a6';g.lineWidth=2;g.beginPath();
+  hist.forEach((v,i)=>{const x=i/187*W,y=H-v/100*(H-6)-3;i?g.lineTo(x,y):g.moveTo(x,y);});g.stroke();}
+function persist(){try{localStorage.setItem(LOG_KEY,JSON.stringify(log.slice(-5000)));}catch(e){}}
+function calibNote(){$('calibnote').textContent=cal.custom?('calibrated: '+cal.slope.toFixed(3)+' m/s per dB · Re-zero in calm'):'on Start it measures 5 s of calm as zero · keep still';}
+function micConstraints(){return {
+  echoCancellation:false, noiseSuppression:false, autoGainControl:false,   // echoCancellation:false is the master switch that bypasses the whole WebRTC processing chain (incl. AGC)
+  googEchoCancellation:false, googAutoGainControl:false, googAutoGainControl2:false,
+  googNoiseSuppression:false, googNoiseSuppression2:false, googHighpassFilter:false,
+  googTypingNoiseDetection:false, voiceIsolation:false,                    // legacy/vendor flags — ignored if unknown, harmless
+  channelCount:1, deviceId:chosenMic?{exact:chosenMic}:undefined};}
+function showMicSettings(){try{const s=mic.getAudioTracks()[0].getSettings();
+  const b=k=>(k in s)?(s[k]?'ON':'off'):'?';
+  $('note').hidden=false;
+  $('note').textContent='mic: AGC '+b('autoGainControl')+' · echo '+b('echoCancellation')+' · noise '+b('noiseSuppression');
+  }catch(e){}}
+async function listMics(){
+  try{
+    const devs=await navigator.mediaDevices.enumerateDevices();
+    const ins=devs.filter(d=>d.kind==='audioinput');
+    if(!ins.length)return;
+    const sel=$('micsel');sel.innerHTML='';
+    ins.forEach((d,i)=>{const o=document.createElement('option');o.value=d.deviceId;
+      o.textContent=d.label||('Microphone '+(i+1));sel.appendChild(o);});
+    // avoid communication routes (Speakerphone/earpiece): they force the OS VOICE_COMMUNICATION path with mandatory AGC
+    const isComm=d=>/speaker|earpiece|communication|επικοιν/i.test(d.label);
+    if(chosenMic && ins.some(d=>d.deviceId===chosenMic && isComm(d))) chosenMic=null;   // migrate away from an old saved comm route
+    if(chosenMic&&ins.some(d=>d.deviceId===chosenMic)){sel.value=chosenMic;}
+    else{
+      const def=ins.find(d=>d.deviceId==='default')||ins.find(d=>!isComm(d))||ins[0];  // prefer the plain Default (media) mic
+      chosenMic=def.deviceId;sel.value=chosenMic;try{localStorage.setItem(MIC_KEY,chosenMic);}catch(e){}
+      if(running&&src)reopenMic();
+    }
+    $('cfgrow').hidden=false;
+  }catch(e){}
+}
+async function reopenMic(){                            // switch input device live, then re-level + re-zero
+  try{
+    if(src)src.disconnect();
+    if(mic)mic.getTracks().forEach(t=>t.stop());
+    mic=await navigator.mediaDevices.getUserMedia({audio:micConstraints()});
+    src=ac.createMediaStreamSource(mic);src.connect(proc);
+    showMicSettings();
+    filled=0;lastTotal=totalSamples;if(listenMode)beginZero();else beginLevel();
+  }catch(e){$('note').hidden=false;$('note').textContent='Could not switch mic: '+(e.name||e);}
+}
+$('micsel').onchange=()=>{chosenMic=$('micsel').value;
+  try{localStorage.setItem(MIC_KEY,chosenMic);}catch(e){}
+  if(running)reopenMic();};
+async function start(){
+  try{
+    const MODE = $('mode') ? $('mode').value : 'measure';
+    listenMode = (MODE==='listen');
+    ac=new (window.AudioContext||window.webkitAudioContext)();sr=ac.sampleRate;
+    if(MODE==='emit'){                    // TX only: emit the tones, no mic, no analysis loop
+      gain=ac.createGain();gain.gain.value=(parseFloat($('txvol').value)||18)/100;gain.connect(ac.destination);
+      for(const f of TONES){const o=ac.createOscillator();o.frequency.value=f;o.connect(gain);o.start();oscs.push(o);}
+      running=true;$('go').textContent='Stop';$('go').className='go stop';$('note').hidden=true;setStatus(true,'live');
+      $('state').className='state flow';$('state').textContent='EMITTING';$('reading').textContent='TX';
+      $('txrow').hidden=false;$('txvol').oninput=()=>{if(gain)gain.gain.value=parseFloat($('txvol').value)/100;};
+      $('calibnote').textContent='Emitting '+TONES.map(t=>(t/1000).toFixed(1)).join('/')+' kHz · put the receiver ~30-50 cm away in Listen mode';
+      try{if('wakeLock'in navigator){wakeLock=await navigator.wakeLock.request('screen');}}catch(e){}
+      return;
+    }
+    ringLen=Math.ceil(WIN_S*sr);ring=new Float64Array(ringLen);ringPos=0;filled=0;
+    totalSamples=0;lastTotal=0;
+    if(!listenMode){                     // Measure: this phone emits the tones. In Listen/RX another device emits.
+      gain=ac.createGain();gain.gain.value=0.03;gain.connect(ac.destination);
+      for(const f of TONES){const o=ac.createOscillator();o.frequency.value=f;o.connect(gain);o.start();oscs.push(o);}
+    }
+    mic=await navigator.mediaDevices.getUserMedia({audio:micConstraints()});
+    src=ac.createMediaStreamSource(mic);proc=ac.createScriptProcessor(4096,1,1);
+    proc.onaudioprocess=e=>{const d=e.inputBuffer.getChannelData(0);
+      for(let i=0;i<d.length;i++){ring[ringPos]=d[i];ringPos=(ringPos+1)%ringLen;if(filled<ringLen)filled++;}
+      totalSamples+=d.length;};
+    src.connect(proc);proc.connect(ac.destination);
+    listMics();                          // now that we have permission, labels are available
+    try{if('wakeLock'in navigator){wakeLock=await navigator.wakeLock.request('screen');}}catch(e){}
+    running=true;$('go').textContent='Stop';$('go').className='go stop';$('note').hidden=true;setStatus(true,'live');
+    if(listenMode){ setTimeout(beginZero, WIN_S*1000); }   // RX: no auto-level (can't control the remote emitter); just zero the calm HF
+    else { setTimeout(beginLevel, WIN_S*1000); }           // Measure: fill, auto-set volume, then zero
+    showMicSettings();
+    if(listenMode){$('note').hidden=false;$('note').textContent='RX: another device emits. Keep ~30-50 cm apart, open air between. Carrier wants > -45. · '+($('note').textContent||'');}
+    $('state').className='state zero';$('state').textContent='filling…';loop();
+  }catch(err){$('note').hidden=false;
+    $('note').innerHTML='<b>Microphone unavailable here.</b> Preview windows block the mic. Host over HTTPS (GitHub Pages, or drop at <code>app.netlify.com/drop</code>), open in Chrome, tap Start. ('+err.name+')';}
+}
+function stop(){running=false;oscs.forEach(o=>{try{o.stop()}catch(e){}});oscs=[];
+  if(wakeLock){try{wakeLock.release()}catch(e){}wakeLock=null;}
+  if(proc)proc.disconnect();if(src)src.disconnect();if(mic)mic.getTracks().forEach(t=>t.stop());if(ac)ac.close();
+  $('txrow').hidden=true;
+  persist();$('go').textContent='Start';$('go').className='go';$('state').className='state idle';$('state').textContent='idle';setStatus(false,'idle');}
+$('go').onclick=()=>running?stop():start();
+$('zero').onclick=()=>{if(running)beginZero();};
+$('calib').onclick=()=>{if(lastRel===null){$('note').hidden=false;$('note').textContent='Start, let it zero, then apply wind and calibrate.';return;}
+  const v=parseFloat(prompt('Wind speed now (m/s) — from your anemometer, or a rough guess like 3:'));if(!(v>0))return;
+  const relEff=Math.abs(lastRel)<=DEAD?0:lastRel-Math.sign(lastRel)*DEAD;
+  if(Math.abs(relEff)<1){$('note').hidden=false;$('note').textContent='Apply wind first, then calibrate (the reading must differ clearly from calm).';return;}
+  cal.slope=v/relEff;cal.custom=true;try{localStorage.setItem(CAL_KEY,JSON.stringify(cal));}catch(e){}calibNote();};
+$('dl').onclick=async()=>{
+  if(!log.length){$('note').hidden=false;$('note').textContent='Log is empty — run a measurement first, then Export.';return;}
+  let csv="t_iso,hflf_dB,rel_dB,wind_index,v_est_ms,carrier_dBFS,noise_ratio,tone_spread_dB,vlf_dB,lf_dB,mid_dB,hf_dB\n";
+  for(const r of log)csv+=new Date(r.t).toISOString()+","+r.hflf+","+(r.rel??'')+","+r.idx+","+r.v+","+r.carr+","+(r.nz??'')+","+(r.spr??'')+","+(r.vlf??'')+","+(r.lf??'')+","+(r.mid??'')+","+(r.hf??'')+"\n";
+  let msg='';
+  try{await navigator.clipboard.writeText(csv);msg='✓ CSV copied to clipboard ('+log.length+' rows) — paste it straight into chat.';}catch(e){}
+  try{const a=document.createElement('a');a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv);
+    a.download='windmeter_'+new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')+'.csv';
+    document.body.appendChild(a);a.click();a.remove();
+    msg=(msg?msg+' · ':'')+'also saved to Downloads if allowed.';}catch(e){}
+  $('note').hidden=false;$('note').textContent=msg||'Could not export — take a screenshot instead.';};
+$('clr').onclick=()=>{log=[];hist=[];persist();$('nlog').textContent='0';drawSpark();};
+document.addEventListener('visibilitychange',async()=>{
+  if(running&&document.visibilityState==='visible'&&wakeLock===null&&'wakeLock'in navigator){
+    try{wakeLock=await navigator.wakeLock.request('screen');}catch(e){}}});
+</script>
