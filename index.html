@@ -40,6 +40,9 @@ svg{width:100%;height:100%;display:block}
 .cell .k{font-size:9.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.6px}
 .cell .v{font-family:var(--mono);font-size:15px;font-weight:500;margin-top:3px;font-variant-numeric:tabular-nums}
 canvas{width:100%;height:120px;flex-shrink:0;background:var(--panel);border:1px solid var(--edge);border-radius:12px;display:block}
+#spectrum{width:100%;height:210px}
+#spectrum[hidden]{display:none}
+#gwrap[hidden]{display:none}
 .go{appearance:none;border:none;border-radius:13px;font-family:var(--sans);font-size:17px;font-weight:600;
   padding:15px;cursor:pointer;background:var(--accent);color:#052019;letter-spacing:.3px}
 .go.stop{background:var(--bad);color:#25090a}
@@ -65,7 +68,8 @@ canvas{width:100%;height:120px;flex-shrink:0;background:var(--panel);border:1px 
   </div>
 
   <div class="center">
-    <div class="gwrap">
+    <canvas id="spectrum" width="600" height="200" hidden></canvas>
+    <div class="gwrap" id="gwrap">
       <svg viewBox="0 0 200 200" aria-hidden="true">
         <path d="M40 168 A80 80 0 1 1 160 168" fill="none" stroke="var(--track)" stroke-width="12" stroke-linecap="round"/>
         <path id="arc" d="M40 168 A80 80 0 1 1 160 168" fill="none" stroke="var(--accent)" stroke-width="12" stroke-linecap="round"/>
@@ -127,6 +131,7 @@ let carrFloor=null, zeroCarrBuf=[], lastRel=null, vSmoothBuf=[], cfBuf=[], scint
 let chosenMic=null;
 let listenMode=false;
 let vtick=0, vPeakHz=0, vRatio=0, vWidth=0, widthFloor=null, widthHist=[];
+let specP=null, specDf=0, specBaseP=null;
 let motionLevel=0, lastAmag=null, motionOn=false;
 let cal={slope:0.30,custom:false};
 const $=id=>document.getElementById(id);
@@ -195,6 +200,7 @@ function fluctFeatures(x){                            // PRIMARY: RMS spectral w
   for(let k=1;k<P.length;k++){const fr=k*df;if(fr<SWLO||fr>SWHI)continue;
     s0+=P[k];s2+=P[k]*fr*fr;band.push(P[k]);if(fr>=VLO&&fr<=VHI&&P[k]>bestv){bestv=P[k];bestk=k;}}
   band.sort((a,b)=>a-b);const medv=band.length?band[band.length>>1]:1e-12;
+  specP=P;specDf=df;                                   // expose the combined spectrum for the hero plot
   return {widthHz:s0>0?Math.sqrt(s2/s0):0, peakHz:bestk>0?bestk*df:0, prom:bestv/(medv+1e-12)};}
 function metrics(env,fsd){const n=env.length;let mean=0;for(let i=0;i<n;i++)mean+=env[i];mean/=n;
   const carrDb=20*Math.log10(mean+1e-12);let P=1;while(P<n)P<<=1;
@@ -233,7 +239,7 @@ function loop(){
       const spread=w.length>=8?(Math.max(...w)-Math.min(...w)):99;
       $('state').className='state zero';$('state').textContent='zeroing…';
       $('calibnote').textContent='baseline carrier '+cf.toFixed(0)+' dBFS — hold still, no wind ('+Math.round(el)+'s)';
-      if((el>=4&&spread<2.5)||el>=20){carrFloor=med(w);scintFloor=std(w);const ff0=fluctFeatures(x);widthFloor=ff0.widthHz;vWidth=ff0.widthHz;zeroing=false;}
+      if((el>=4&&spread<2.5)||el>=20){carrFloor=med(w);scintFloor=std(w);const ff0=fluctFeatures(x);widthFloor=ff0.widthHz;vWidth=ff0.widthHz;specBaseP=specP?specP.slice():null;zeroing=false;}
       setTimeout(loop,300);return;
     }
     if(motionOn && motionLevel>MOTION_TH){                   // phone is being handled → the carrier drop is motion, not wind
@@ -259,7 +265,7 @@ function loop(){
     const col=st==='flow'?'var(--bad)':st==='light'?'var(--warn)':'var(--accent)';$('arc').setAttribute('stroke',col);
     $('hflf').textContent = vWidth>0?vWidth.toFixed(0):'--';                      // "width Hz" cell
     $('calibnote').textContent='base '+(widthFloor!==null?widthFloor.toFixed(0):'--')+' Hz · now '+vWidth.toFixed(0)+' Hz · Δ '+relW.toFixed(0)+' Hz';
-    widthHist.push(vWidth);if(widthHist.length>188)widthHist.shift();drawWidth();
+    widthHist.push(vWidth);if(widthHist.length>188)widthHist.shift();drawWidth();drawSpectrum();
     log.push({t:Date.now(),hflf:+vWidth.toFixed(1),rel:+relW.toFixed(2),idx:aidx,v:+v.toFixed(2),carr:+cf.toFixed(1),nz:+vRatio.toFixed(1),spr:0,vlf:0,lf:0,mid:+drop.toFixed(2),hf:+vPeakHz.toFixed(1)});
     if(log.length>6000)log=log.slice(-5000);
     if(log.length%10===0)persist();$('nlog').textContent=log.length;
@@ -365,6 +371,17 @@ function drawWidth(){const c=$('spark'),g=c.getContext('2d'),W=c.width,H=c.heigh
   g.strokeStyle='#37c9a6';g.lineWidth=2;g.beginPath();const n=widthHist.length;
   widthHist.forEach((v,i)=>{const x=i/(n-1)*W,y=Y(v);i?g.lineTo(x,y):g.moveTo(x,y);});g.stroke();
   g.fillStyle='#7d938a';g.font='11px monospace';g.fillText(mx.toFixed(0)+' Hz',6,14);g.fillText(mn.toFixed(0)+' Hz',6,H-6);}
+function drawSpectrum(){const c=$('spectrum'),g=c.getContext('2d'),W=c.width,H=c.height;
+  g.clearRect(0,0,W,H);
+  if(!specP){g.fillStyle='#4d6459';g.font='13px monospace';g.fillText('collecting spectrum…',12,26);return;}
+  const fmax=150,Ha=H-18,DR=40,nb=Math.min(specP.length,Math.max(2,Math.floor(fmax/specDf)));
+  let mx=1e-12;for(let k=1;k<nb;k++){if(specP[k]>mx)mx=specP[k];if(specBaseP&&specBaseP[k]>mx)mx=specBaseP[k];}
+  const X=k=>k*specDf/fmax*W, Yv=p=>2+Ha*(1-(Math.max(-DR,10*Math.log10((p+1e-20)/mx))+DR)/DR);
+  g.strokeStyle='#1b2823';g.lineWidth=1;g.fillStyle='#4d6459';g.font='10px monospace';
+  for(let f=0;f<=fmax;f+=30){const x=f/fmax*W;g.beginPath();g.moveTo(x,0);g.lineTo(x,Ha+2);g.stroke();g.fillText(f+(f===fmax?' Hz':''),x+2,H-4);}
+  if(specBaseP){g.strokeStyle='#5f7a6f';g.lineWidth=1;g.beginPath();for(let k=1;k<nb;k++){const x=X(k),y=Yv(specBaseP[k]);k===1?g.moveTo(x,y):g.lineTo(x,y);}g.stroke();}
+  g.strokeStyle='#37c9a6';g.lineWidth=2;g.beginPath();for(let k=1;k<nb;k++){const x=X(k),y=Yv(specP[k]);k===1?g.moveTo(x,y):g.lineTo(x,y);}g.stroke();
+  g.fillStyle='#7d938a';g.font='11px monospace';g.fillText('flicker spectrum · base ─ / now ─',8,14);}
 function persist(){try{localStorage.setItem(LOG_KEY,JSON.stringify(log.slice(-5000)));}catch(e){}}
 function calibNote(){$('calibnote').textContent=cal.custom?('calibrated: '+cal.slope.toFixed(3)+' m/s per dB · Re-zero in calm'):'on Start it measures 5 s of calm as zero · keep still';}
 function micConstraints(){return {
@@ -448,6 +465,7 @@ async function start(){
     $('hflfk').textContent = listenMode ? 'width Hz' : 'HF band';
     $('idxk').textContent = listenMode ? 'Δ Hz' : 'index';
     $('un').textContent = listenMode ? 'Hz · spectral width' : 'm/s est.';
+    $('gwrap').hidden = listenMode; $('spectrum').hidden = !listenMode;   // hero = live spectrum in Listen mode
     if(listenMode){$('vrow').hidden=false;$('note').hidden=false;$('note').textContent='RX: another device emits. Keep ~30-50 cm apart, open air between. Carrier wants > -45. · '+($('note').textContent||'');}
     $('state').className='state zero';$('state').textContent='filling…';loop();
   }catch(err){$('note').hidden=false;
@@ -456,7 +474,7 @@ async function start(){
 function stop(){running=false;oscs.forEach(o=>{try{o.stop()}catch(e){}});oscs=[];
   if(wakeLock){try{wakeLock.release()}catch(e){}wakeLock=null;}
   if(proc)proc.disconnect();if(src)src.disconnect();if(mic)mic.getTracks().forEach(t=>t.stop());if(ac)ac.close();
-  $('txrow').hidden=true;$('vrow').hidden=true;
+  $('txrow').hidden=true;$('vrow').hidden=true;$('gwrap').hidden=false;$('spectrum').hidden=true;
   persist();$('go').textContent='Start';$('go').className='go';$('state').className='state idle';$('state').textContent='idle';setStatus(false,'idle');}
 $('go').onclick=()=>running?stop():start();
 $('zero').onclick=()=>{if(running)beginZero();};
