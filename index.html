@@ -111,6 +111,7 @@ const LF=[1,5], HF=[20,80], DEC=64, WIN_S=4, ZERO_S=5, SPAN=17, DEAD=3;
 const NOISE_R=3, CARR_JUMP=3, SPREAD_MAX=12, LF_GATE=12;   // sound-rejection thresholds (LF/VLF spike over calm = sound → hold)
 const SCINT_W=1.5, ADAPT=0.03, CALM_V=0.3;                 // bistatic: scintillation weight, baseline drift-tracking rate, calm threshold
 const ST=0.2, VLO=8, VHI=200, PROM=8;                      // vortex: Strouhal, peak-search band (Hz), min prominence (peak/median) to accept a line
+const MOTION_TH=0.35;                                       // accel jitter above this = phone being handled → hold the reading
 const CAL_KEY="windmeter_cal_v2", LOG_KEY="windmeter_log_v2", MIC_KEY="windmeter_mic";
 const ARC_LEN=377;
 const TARGET_CARR=-30, LEVEL_S=4, G_MIN=0.002, G_MAX=0.7, LEVEL_MAX_S=14;   // auto-level: drive carrier to ~-30 dBFS (more headroom for weak high-freq emission)
@@ -125,6 +126,7 @@ let carrFloor=null, zeroCarrBuf=[], lastRel=null, vSmoothBuf=[], cfBuf=[], scint
 let chosenMic=null;
 let listenMode=false;
 let vtick=0, vPeakHz=0, vRatio=0;
+let motionLevel=0, lastAmag=null, motionOn=false;
 let cal={slope:0.30,custom:false};
 const $=id=>document.getElementById(id);
 try{chosenMic=localStorage.getItem(MIC_KEY)||null;}catch(e){}
@@ -158,6 +160,13 @@ function fastCarrier(x){                              // carrier level over the 
   for(const f of TONES){let si=0,sq=0;for(let i=0;i<n;i++){const a=2*Math.PI*f*(off+i)/sr;si+=x[off+i]*Math.cos(a);sq-=x[off+i]*Math.sin(a);}
     const db=20*Math.log10(Math.hypot(si/n,sq/n)+1e-12);if(db>best)best=db;}
   return best;}
+function onMotion(e){const a=e.accelerationIncludingGravity||e.acceleration;if(!a)return;
+  const mag=Math.hypot(a.x||0,a.y||0,a.z||0);
+  if(lastAmag!==null)motionLevel=0.8*motionLevel+0.2*Math.abs(mag-lastAmag);   // EMA of accel jitter
+  lastAmag=mag;}
+async function setupMotion(){if(motionOn)return;try{
+  if(typeof DeviceMotionEvent!=='undefined'&&DeviceMotionEvent.requestPermission){const p=await DeviceMotionEvent.requestPermission();if(p!=='granted')return;}
+  window.addEventListener('devicemotion',onMotion);motionOn=true;}catch(e){}}
 function vortexPeak(x){                               // dominant flicker frequency across tones → vortex shedding line
   let P=null,fsd=0,PW=0;
   for(const f of TONES){const e=toneEnv(x,f),env=e.env,n=env.length;fsd=e.fsd;
@@ -211,6 +220,11 @@ function loop(){
       $('calibnote').textContent='baseline carrier '+cf.toFixed(0)+' dBFS — hold still, no wind ('+Math.round(el)+'s)';
       if((el>=4&&spread<2.5)||el>=20){carrFloor=med(w);scintFloor=std(w);zeroing=false;}
       setTimeout(loop,300);return;
+    }
+    if(motionOn && motionLevel>MOTION_TH){                   // phone is being handled → the carrier drop is motion, not wind
+      $('state').className='state sat';$('state').textContent='moving — hold';
+      $('calibnote').textContent='phone moving — set it on a stand & keep still (motion '+motionLevel.toFixed(1)+')';
+      setTimeout(loop,250);return;
     }
     cfBuf.push(cf);if(cfBuf.length>8)cfBuf.shift();          // ~2 s of fast-carrier samples
     const scint=std(cfBuf);                                  // #2 scintillation: turbulence makes the carrier flicker
@@ -384,6 +398,7 @@ async function start(){
   try{
     const MODE = $('mode') ? $('mode').value : 'measure';
     listenMode = (MODE==='listen');
+    if(listenMode)setupMotion();          // enable handling-detection (needs the Start tap for iOS permission)
     ac=new (window.AudioContext||window.webkitAudioContext)();sr=ac.sampleRate;
     if(MODE==='emit'){                    // TX only: emit the tones, no mic, no analysis loop
       gain=ac.createGain();gain.gain.value=(parseFloat($('txvol').value)||18)/100;gain.connect(ac.destination);
