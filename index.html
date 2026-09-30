@@ -47,7 +47,7 @@ canvas{width:100%;height:66px;flex-shrink:0;background:var(--panel);border:1px s
 .cfg{display:flex;align-items:center;gap:9px;font-size:11px;color:var(--dim);
   text-transform:uppercase;letter-spacing:.6px}
 .cfg[hidden]{display:none}
-.cfg select{flex:1;min-width:0;background:var(--panel2);color:var(--fg);border:1px solid var(--edge2);
+.cfg select,.cfg input[type=number]{flex:1;min-width:0;background:var(--panel2);color:var(--fg);border:1px solid var(--edge2);
   border-radius:10px;padding:10px 11px;font-family:var(--sans);font-size:12.5px;letter-spacing:0;text-transform:none}
 .note{background:var(--panel);border:1px solid var(--edge);border-left:3px solid var(--warn);
   border-radius:0 10px 10px 0;padding:11px 13px;font-size:12.5px;line-height:1.5}
@@ -89,6 +89,7 @@ canvas{width:100%;height:66px;flex-shrink:0;background:var(--panel);border:1px s
   </select></div>
   <div class="cfg" id="cfgrow" hidden><label for="micsel">mic</label><select id="micsel"></select></div>
   <div class="cfg" id="txrow" hidden><label for="txvol">vol</label><input type="range" id="txvol" min="2" max="60" value="18" style="flex:1"></div>
+  <div class="cfg" id="vrow" hidden><label for="rodD">rod &empty; cm</label><input type="number" id="rodD" value="1" step="0.1" min="0.2" style="flex:1"></div>
   <button id="go" class="go">Start</button>
   <div class="tools">
     <button id="zero">Re-zero calm</button>
@@ -106,6 +107,7 @@ const NF=[19500,20600,21600];                       // off-tone probes (nothing 
 const LF=[1,5], HF=[20,80], DEC=64, WIN_S=4, ZERO_S=5, SPAN=17, DEAD=3;
 const NOISE_R=3, CARR_JUMP=3, SPREAD_MAX=12, LF_GATE=12;   // sound-rejection thresholds (LF/VLF spike over calm = sound → hold)
 const SCINT_W=1.5, ADAPT=0.03, CALM_V=0.3;                 // bistatic: scintillation weight, baseline drift-tracking rate, calm threshold
+const ST=0.2, VLO=8, VHI=200;                              // vortex-shedding: Strouhal number, peak-search band (Hz)
 const CAL_KEY="windmeter_cal_v2", LOG_KEY="windmeter_log_v2", MIC_KEY="windmeter_mic";
 const ARC_LEN=377;
 const TARGET_CARR=-30, LEVEL_S=4, G_MIN=0.002, G_MAX=0.7, LEVEL_MAX_S=14;   // auto-level: drive carrier to ~-30 dBFS (more headroom for weak high-freq emission)
@@ -119,6 +121,7 @@ let lfFloor=null, vlfFloor=null, zeroLfBuf=[], zeroVlfBuf=[];
 let carrFloor=null, zeroCarrBuf=[], lastRel=null, vSmoothBuf=[], cfBuf=[], scintFloor=null;
 let chosenMic=null;
 let listenMode=false;
+let vtick=0, vPeakHz=0, vRatio=0;
 let cal={slope:0.30,custom:false};
 const $=id=>document.getElementById(id);
 try{chosenMic=localStorage.getItem(MIC_KEY)||null;}catch(e){}
@@ -152,6 +155,19 @@ function fastCarrier(x){                              // carrier level over the 
   for(const f of TONES){let si=0,sq=0;for(let i=0;i<n;i++){const a=2*Math.PI*f*(off+i)/sr;si+=x[off+i]*Math.cos(a);sq-=x[off+i]*Math.sin(a);}
     const db=20*Math.log10(Math.hypot(si/n,sq/n)+1e-12);if(db>best)best=db;}
   return best;}
+function vortexPeak(x){                               // dominant flicker frequency across tones → vortex shedding line
+  let P=null,fsd=0,PW=0;
+  for(const f of TONES){const e=toneEnv(x,f),env=e.env,n=env.length;fsd=e.fsd;
+    let mean=0;for(let i=0;i<n;i++)mean+=env[i];mean/=n;if(mean<1e-9)continue;
+    if(!PW){PW=1;while(PW<n)PW<<=1;P=new Float64Array(PW>>1);}
+    const re=new Float64Array(PW),im=new Float64Array(PW);
+    for(let i=0;i<n;i++){const w=0.5-0.5*Math.cos(2*Math.PI*i/(n-1));re[i]=(env[i]/mean-1)*w;}
+    fft(re,im);for(let k=0;k<(PW>>1);k++)P[k]+=re[k]*re[k]+im[k]*im[k];}
+  if(!P)return {hz:0,ratio:0};
+  const df=fsd/PW;let bestk=-1,bestv=0,sum=0,cnt=0;
+  for(let k=1;k<P.length;k++){const fr=k*df;if(fr<VLO||fr>VHI)continue;sum+=P[k];cnt++;if(P[k]>bestv){bestv=P[k];bestk=k;}}
+  const mean=cnt?sum/cnt:1e-12;
+  return {hz:bestk>0?bestk*df:0, ratio:bestv/(mean+1e-12)};}   // ratio = peak prominence (a real line is >~4)
 function metrics(env,fsd){const n=env.length;let mean=0;for(let i=0;i<n;i++)mean+=env[i];mean/=n;
   const carrDb=20*Math.log10(mean+1e-12);let P=1;while(P<n)P<<=1;
   const re=new Float64Array(P),im=new Float64Array(P);
@@ -210,7 +226,14 @@ function loop(){
     $('state').className='state '+st;$('state').textContent=lbl;
     const col=st==='flow'?'var(--bad)':st==='light'?'var(--warn)':'var(--accent)';$('arc').setAttribute('stroke',col);
     hist.push(idx);if(hist.length>188)hist.shift();drawSpark(col);
-    log.push({t:Date.now(),hflf:0,rel:+sig.toFixed(2),idx,v:+v.toFixed(2),carr:+cf.toFixed(1),nz:0,spr:+scint.toFixed(2),vlf:0,lf:0,mid:+drop.toFixed(2),hf:0});
+    vtick++;
+    if(vtick%8===0){const vp=vortexPeak(x);vPeakHz=vp.hz;vRatio=vp.ratio;}   // ~every 2 s: dominant flicker (vortex) freq
+    const rodD=Math.max(0.2,parseFloat($('rodD').value)||1);
+    const vVort = vPeakHz>0 ? vPeakHz*(rodD/100)/ST : 0;
+    $('calibnote').textContent = vPeakHz>0
+      ? 'vortex '+vPeakHz.toFixed(0)+' Hz'+(vRatio>4?' ✓':' (weak)')+' → '+vVort.toFixed(1)+' m/s  (⌀'+rodD+'cm)'
+      : 'live carrier reading · put a rod in the beam for vortex m/s';
+    log.push({t:Date.now(),hflf:0,rel:+sig.toFixed(2),idx,v:+v.toFixed(2),carr:+cf.toFixed(1),nz:+vRatio.toFixed(1),spr:+scint.toFixed(2),vlf:0,lf:0,mid:+drop.toFixed(2),hf:+vPeakHz.toFixed(1)});
     if(log.length>6000)log=log.slice(-5000);
     if(log.length%10===0)persist();$('nlog').textContent=log.length;
     setTimeout(loop,250);return;
@@ -384,7 +407,7 @@ async function start(){
     if(listenMode){ setTimeout(beginZero, WIN_S*1000); }   // RX: no auto-level (can't control the remote emitter); just zero the calm HF
     else { setTimeout(beginLevel, WIN_S*1000); }           // Measure: fill, auto-set volume, then zero
     showMicSettings();
-    if(listenMode){$('note').hidden=false;$('note').textContent='RX: another device emits. Keep ~30-50 cm apart, open air between. Carrier wants > -45. · '+($('note').textContent||'');}
+    if(listenMode){$('vrow').hidden=false;$('note').hidden=false;$('note').textContent='RX: another device emits. Keep ~30-50 cm apart, open air between. Carrier wants > -45. · '+($('note').textContent||'');}
     $('state').className='state zero';$('state').textContent='filling…';loop();
   }catch(err){$('note').hidden=false;
     $('note').innerHTML='<b>Microphone unavailable here.</b> Preview windows block the mic. Host over HTTPS (GitHub Pages, or drop at <code>app.netlify.com/drop</code>), open in Chrome, tap Start. ('+err.name+')';}
@@ -392,7 +415,7 @@ async function start(){
 function stop(){running=false;oscs.forEach(o=>{try{o.stop()}catch(e){}});oscs=[];
   if(wakeLock){try{wakeLock.release()}catch(e){}wakeLock=null;}
   if(proc)proc.disconnect();if(src)src.disconnect();if(mic)mic.getTracks().forEach(t=>t.stop());if(ac)ac.close();
-  $('txrow').hidden=true;
+  $('txrow').hidden=true;$('vrow').hidden=true;
   persist();$('go').textContent='Start';$('go').className='go';$('state').className='state idle';$('state').textContent='idle';setStatus(false,'idle');}
 $('go').onclick=()=>running?stop():start();
 $('zero').onclick=()=>{if(running)beginZero();};
