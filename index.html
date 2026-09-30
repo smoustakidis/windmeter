@@ -112,6 +112,7 @@ const NOISE_R=3, CARR_JUMP=3, SPREAD_MAX=12, LF_GATE=12;   // sound-rejection th
 const SCINT_W=1.5, ADAPT=0.03, CALM_V=0.3;                 // bistatic: scintillation weight, baseline drift-tracking rate, calm threshold
 const ST=0.2, VLO=8, VHI=200, PROM=8;                      // vortex: Strouhal, peak-search band (Hz), min prominence (peak/median) to accept a line
 const MOTION_TH=0.35;                                       // accel jitter above this = phone being handled → hold the reading
+const SWLO=2, SWHI=150, DEADW=2, SW_SCALE=0.12;            // spectral-width (PRIMARY): band (Hz), Hz deadband, provisional m/s per Hz
 const CAL_KEY="windmeter_cal_v2", LOG_KEY="windmeter_log_v2", MIC_KEY="windmeter_mic";
 const ARC_LEN=377;
 const TARGET_CARR=-30, LEVEL_S=4, G_MIN=0.002, G_MAX=0.7, LEVEL_MAX_S=14;   // auto-level: drive carrier to ~-30 dBFS (more headroom for weak high-freq emission)
@@ -125,7 +126,7 @@ let lfFloor=null, vlfFloor=null, zeroLfBuf=[], zeroVlfBuf=[];
 let carrFloor=null, zeroCarrBuf=[], lastRel=null, vSmoothBuf=[], cfBuf=[], scintFloor=null;
 let chosenMic=null;
 let listenMode=false;
-let vtick=0, vPeakHz=0, vRatio=0;
+let vtick=0, vPeakHz=0, vRatio=0, vWidth=0, widthFloor=null;
 let motionLevel=0, lastAmag=null, motionOn=false;
 let cal={slope:0.30,custom:false};
 const $=id=>document.getElementById(id);
@@ -181,6 +182,20 @@ function vortexPeak(x){                               // dominant flicker freque
   if(!band.length)return {hz:0,ratio:0};
   band.sort((a,b)=>a-b);const medv=band[band.length>>1]||1e-12;
   return {hz:bestk>0?bestk*df:0, ratio:bestv/(medv+1e-12)};}   // prominence = peak / median(band); a real shedding line is sharp (high)
+function fluctFeatures(x){                            // PRIMARY: RMS spectral width of the flicker (level-independent) + vortex peak
+  let P=null,fsd=0,PW=0;
+  for(const f of TONES){const e=toneEnv(x,f),env=e.env,n=env.length;fsd=e.fsd;
+    let mean=0;for(let i=0;i<n;i++)mean+=env[i];mean/=n;if(mean<1e-9)continue;
+    if(!PW){PW=1;while(PW<n)PW<<=1;P=new Float64Array(PW>>1);}
+    const re=new Float64Array(PW),im=new Float64Array(PW);
+    for(let i=0;i<n;i++){const w=0.5-0.5*Math.cos(2*Math.PI*i/(n-1));re[i]=(env[i]/mean-1)*w;}
+    fft(re,im);for(let k=0;k<(PW>>1);k++)P[k]+=re[k]*re[k]+im[k]*im[k];}
+  if(!P)return {widthHz:0,peakHz:0,prom:0};
+  const df=fsd/PW;let s0=0,s2=0,bestk=-1,bestv=0;const band=[];
+  for(let k=1;k<P.length;k++){const fr=k*df;if(fr<SWLO||fr>SWHI)continue;
+    s0+=P[k];s2+=P[k]*fr*fr;band.push(P[k]);if(fr>=VLO&&fr<=VHI&&P[k]>bestv){bestv=P[k];bestk=k;}}
+  band.sort((a,b)=>a-b);const medv=band.length?band[band.length>>1]:1e-12;
+  return {widthHz:s0>0?Math.sqrt(s2/s0):0, peakHz:bestk>0?bestk*df:0, prom:bestv/(medv+1e-12)};}
 function metrics(env,fsd){const n=env.length;let mean=0;for(let i=0;i<n;i++)mean+=env[i];mean/=n;
   const carrDb=20*Math.log10(mean+1e-12);let P=1;while(P<n)P<<=1;
   const re=new Float64Array(P),im=new Float64Array(P);
@@ -197,7 +212,7 @@ const std=a=>{if(a.length<2)return 0;const m=a.reduce((x,y)=>x+y,0)/a.length;ret
 function setStatus(live,txt){$('statusdot').className='dot'+(live?' live':'');$('statustxt').textContent=txt;}
 function beginLevel(){leveling=true;levelStart=performance.now();levelBegin=performance.now();zeroing=false;base=null;
   $('state').className='state zero';$('state').textContent='leveling…';$('reading').textContent='--';}
-function beginZero(){leveling=false;base=null;zeroing=true;zeroBuf=[];zeroNoiseBuf=[];noiseFloor=null;lastCarr=null;zeroLfBuf=[];zeroVlfBuf=[];lfFloor=null;vlfFloor=null;zeroCarrBuf=[];carrFloor=null;vSmoothBuf=[];cfBuf=[];scintFloor=null;zeroStart=performance.now();
+function beginZero(){leveling=false;base=null;zeroing=true;zeroBuf=[];zeroNoiseBuf=[];noiseFloor=null;lastCarr=null;zeroLfBuf=[];zeroVlfBuf=[];lfFloor=null;vlfFloor=null;zeroCarrBuf=[];carrFloor=null;vSmoothBuf=[];cfBuf=[];scintFloor=null;widthFloor=null;vWidth=0;zeroStart=performance.now();
   $('state').className='state zero';$('reading').textContent='--';}
 function loop(){
   if(!running)return;
@@ -218,7 +233,7 @@ function loop(){
       const spread=w.length>=8?(Math.max(...w)-Math.min(...w)):99;
       $('state').className='state zero';$('state').textContent='zeroing…';
       $('calibnote').textContent='baseline carrier '+cf.toFixed(0)+' dBFS — hold still, no wind ('+Math.round(el)+'s)';
-      if((el>=4&&spread<2.5)||el>=20){carrFloor=med(w);scintFloor=std(w);zeroing=false;}
+      if((el>=4&&spread<2.5)||el>=20){carrFloor=med(w);scintFloor=std(w);const ff0=fluctFeatures(x);widthFloor=ff0.widthHz;vWidth=ff0.widthHz;zeroing=false;}
       setTimeout(loop,300);return;
     }
     if(motionOn && motionLevel>MOTION_TH){                   // phone is being handled → the carrier drop is motion, not wind
@@ -226,34 +241,29 @@ function loop(){
       $('calibnote').textContent='phone moving — set it on a stand & keep still (motion '+motionLevel.toFixed(1)+')';
       setTimeout(loop,250);return;
     }
-    cfBuf.push(cf);if(cfBuf.length>8)cfBuf.shift();          // ~2 s of fast-carrier samples
-    const scint=std(cfBuf);                                  // #2 scintillation: turbulence makes the carrier flicker
-    const scintExc=scintFloor!==null?Math.max(0,scint-scintFloor):0;
-    const drop=carrFloor!==null?(carrFloor-cf):0;            // mean beam drop (wind scatters the beam)
-    const relDrop=Math.max(0,drop-DEAD);
-    const sig=relDrop + SCINT_W*scintExc;                    // combined wind signal
-    const v = cal.custom ? Math.max(0,cal.slope*sig) : sig*0.30;
-    lastRel=sig;
-    vSmoothBuf.push(v);if(vSmoothBuf.length>2)vSmoothBuf.shift();
+    vtick++;
+    if(vtick%4===0){const ff=fluctFeatures(x);vWidth=ff.widthHz;vPeakHz=ff.peakHz;vRatio=ff.prom;}  // ~1 s: PRIMARY spectral width + vortex peak
+    const drop=carrFloor!==null?(carrFloor-cf):0;                                 // carrier drop (secondary diagnostic)
+    const relW = widthFloor!==null ? (vWidth-widthFloor) : 0;                     // PRIMARY: wind widens the flicker spectrum (level-independent)
+    const relEff = Math.max(0, relW - DEADW);
+    const v = cal.custom ? Math.max(0,cal.slope*relEff) : relEff*SW_SCALE;
+    lastRel = relEff;
+    vSmoothBuf.push(v);if(vSmoothBuf.length>3)vSmoothBuf.shift();
     const vShow=vSmoothBuf.reduce((a,b)=>a+b,0)/vSmoothBuf.length;
-    if(carrFloor!==null && vShow<CALM_V){carrFloor += ADAPT*(cf-carrFloor);}   // #1 drift-tracking auto-zero (only while calm)
+    if(widthFloor!==null && vShow<CALM_V){widthFloor += ADAPT*(vWidth-widthFloor);}   // drift-track the calm width baseline
     const idx=Math.max(0,Math.min(100,Math.round(vShow/8*100)));
     $('reading').textContent=vShow.toFixed(1);$('idx').textContent=idx;
     $('arc').style.strokeDashoffset=ARC_LEN*(1-idx/100);
     let st='calm',lbl='calm';if(vShow>2){st='flow';lbl='flow';}else if(vShow>0.6){st='light';lbl='light';}
     $('state').className='state '+st;$('state').textContent=lbl;
     const col=st==='flow'?'var(--bad)':st==='light'?'var(--warn)':'var(--accent)';$('arc').setAttribute('stroke',col);
-    hist.push(idx);if(hist.length>188)hist.shift();drawSpark(col);
-    vtick++;
-    if(vtick%8===0){const vp=vortexPeak(x);vPeakHz=vp.hz;vRatio=vp.ratio;}   // ~every 2 s: dominant flicker (vortex) freq
-    const good = vRatio>PROM && vPeakHz>0;                                    // only trust a SHARP line (rejects broadband noise)
-    $('hflf').textContent = good ? vPeakHz.toFixed(0) : '--';                 // "peak Hz" cell
+    $('hflf').textContent = vWidth>0?vWidth.toFixed(0):'--';                      // "width Hz" cell
     const rodD=Math.max(0.2,parseFloat($('rodD').value)||1);
-    const vVort = good ? vPeakHz*(rodD/100)/ST : 0;
-    $('calibnote').textContent = good
-      ? 'vortex '+vPeakHz.toFixed(0)+' Hz ✓ → '+vVort.toFixed(1)+' m/s (⌀'+rodD+'cm)'
-      : 'no clear vortex line (prom '+vRatio.toFixed(0)+') — add/adjust a rod in the beam';
-    log.push({t:Date.now(),hflf:0,rel:+sig.toFixed(2),idx,v:+v.toFixed(2),carr:+cf.toFixed(1),nz:+vRatio.toFixed(1),spr:+scint.toFixed(2),vlf:0,lf:0,mid:+drop.toFixed(2),hf:+vPeakHz.toFixed(1)});
+    const good=vRatio>PROM && vPeakHz>0;
+    const vVort=good?vPeakHz*(rodD/100)/ST:0;
+    $('calibnote').textContent='width '+vWidth.toFixed(0)+' Hz (Δ'+relW.toFixed(0)+')'+(good?' · vortex '+vPeakHz.toFixed(0)+'→'+vVort.toFixed(1)+'m/s':'');
+    hist.push(idx);if(hist.length>188)hist.shift();drawSpark(col);
+    log.push({t:Date.now(),hflf:+vWidth.toFixed(1),rel:+relEff.toFixed(2),idx,v:+v.toFixed(2),carr:+cf.toFixed(1),nz:+vRatio.toFixed(1),spr:0,vlf:0,lf:0,mid:+drop.toFixed(2),hf:+vPeakHz.toFixed(1)});
     if(log.length>6000)log=log.slice(-5000);
     if(log.length%10===0)persist();$('nlog').textContent=log.length;
     setTimeout(loop,250);return;
@@ -428,7 +438,7 @@ async function start(){
     if(listenMode){ setTimeout(beginZero, WIN_S*1000); }   // RX: no auto-level (can't control the remote emitter); just zero the calm HF
     else { setTimeout(beginLevel, WIN_S*1000); }           // Measure: fill, auto-set volume, then zero
     showMicSettings();
-    $('hflfk').textContent = listenMode ? 'peak Hz' : 'HF band';
+    $('hflfk').textContent = listenMode ? 'width Hz' : 'HF band';
     if(listenMode){$('vrow').hidden=false;$('note').hidden=false;$('note').textContent='RX: another device emits. Keep ~30-50 cm apart, open air between. Carrier wants > -45. · '+($('note').textContent||'');}
     $('state').className='state zero';$('state').textContent='filling…';loop();
   }catch(err){$('note').hidden=false;
