@@ -93,9 +93,11 @@ canvas{width:100%;height:120px;flex-shrink:0;background:var(--panel);border:1px 
     <option value="measure">Measure — this phone emits + hears</option>
     <option value="listen">Listen / RX — another device emits</option>
     <option value="emit">Emit tones — TX (2nd device)</option>
+    <option value="correlate">Correlate — 2 mics, auto m/s (RX)</option>
   </select></div>
   <div class="cfg" id="cfgrow" hidden><label for="micsel">mic</label><select id="micsel"></select></div>
   <div class="cfg" id="txrow" hidden><label for="txvol">vol</label><input type="range" id="txvol" min="2" max="60" value="18" style="flex:1"></div>
+  <div class="cfg" id="dxrow" hidden><label for="dxcm">Δx cm</label><input type="number" id="dxcm" value="14" step="0.5" min="1" style="flex:1"></div>
   <div class="cfg" id="vrow" hidden><label for="rodD">rod &empty; cm</label><input type="number" id="rodD" value="1" step="0.1" min="0.2" style="flex:1"></div>
   <button id="go" class="go">Start</button>
   <div class="tools">
@@ -135,6 +137,7 @@ let specTones=null, specDf=0;
 let rawMag=null, rawF0=0, rawDf=0;
 const RAWLO=18400, RAWHI=22600;
 let motionLevel=0, lastAmag=null, motionOn=false;
+let ring1=null, corrMode=false, nCh=1, ctick=0, corrV=0, corrLagMs=0, corrQ=0;
 let cal={slope:0.30,custom:false};
 const $=id=>document.getElementById(id);
 try{chosenMic=localStorage.getItem(MIC_KEY)||null;}catch(e){}
@@ -168,6 +171,21 @@ function fastCarrier(x){                              // carrier level over the 
   for(const f of TONES){let si=0,sq=0;for(let i=0;i<n;i++){const a=2*Math.PI*f*(off+i)/sr;si+=x[off+i]*Math.cos(a);sq-=x[off+i]*Math.sin(a);}
     const db=20*Math.log10(Math.hypot(si/n,sq/n)+1e-12);if(db>best)best=db;}
   return best;}
+function chiSeries(x){                                // combined scintillation time-series for one channel (avg of tones' normalized envelope fluctuation)
+  let acc=null,fsd=0,cnt=0;
+  for(const f of TONES){const {env,fsd:fd}=toneEnv(x,f);fsd=fd;let m=0;for(let i=0;i<env.length;i++)m+=env[i];m/=env.length;
+    if(m<1e-9)continue;if(!acc)acc=new Float64Array(env.length);for(let i=0;i<env.length;i++)acc[i]+=env[i]/m-1;cnt++;}
+  if(acc&&cnt)for(let i=0;i<acc.length;i++)acc[i]/=cnt;
+  return {chi:acc,fsd};}
+function xcorrLag(a,b,fsd,maxLagS){                   // returns best lag (s, signed) and peak normalized correlation
+  const n=Math.min(a.length,b.length),maxL=Math.floor(maxLagS*fsd);
+  let ma=0,mb=0;for(let i=0;i<n;i++){ma+=a[i];mb+=b[i];}ma/=n;mb/=n;
+  let va=0,vb=0;for(let i=0;i<n;i++){va+=(a[i]-ma)*(a[i]-ma);vb+=(b[i]-mb)*(b[i]-mb);}
+  const norm=Math.sqrt(va*vb)+1e-12;let bestLag=0,bestC=-2;
+  for(let L=-maxL;L<=maxL;L++){let s=0;const i0=Math.max(0,-L),i1=Math.min(n,n-L);
+    for(let i=i0;i<i1;i++)s+=(a[i]-ma)*(b[i+L]-mb);
+    const c=s/norm;if(c>bestC){bestC=c;bestLag=L;}}
+  return {lagS:bestLag/fsd, corr:bestC};}
 function onMotion(e){const a=e.accelerationIncludingGravity||e.acceleration;if(!a)return;
   const mag=Math.hypot(a.x||0,a.y||0,a.z||0);
   if(lastAmag!==null)motionLevel=0.8*motionLevel+0.2*Math.abs(mag-lastAmag);   // EMA of accel jitter
@@ -232,6 +250,37 @@ function loop(){
     $('state').className='state zero';$('state').textContent='resyncing…';setTimeout(loop,500);return;}
   const need=Math.min(filled,ringLen),x=new Float64Array(need);
   for(let i=0;i<need;i++)x[i]=ring[(ringPos-need+i+ringLen)%ringLen];
+
+  if(corrMode){                                      // CORRELATION: two mics → time-lag of the scintillation drift → V = Δx/Δt
+    ctick++;
+    const cf=fastCarrier(x);
+    $('carr').textContent=isFinite(cf)?cf.toFixed(0):'--';
+    if(!isFinite(cf)||cf<-60){$('reading').textContent='--';$('hflf').textContent='--';$('idx').textContent='--';$('state').className='state idle';$('state').textContent='no signal';$('calibnote').textContent='no tone — another device must emit; move closer';setTimeout(loop,300);return;}
+    if(motionOn&&motionLevel>MOTION_TH){$('state').className='state sat';$('state').textContent='moving — hold';$('calibnote').textContent='phone moving — keep it fixed (motion '+motionLevel.toFixed(1)+')';setTimeout(loop,250);return;}
+    if(ctick%4===0){
+      const x1=new Float64Array(need);for(let i=0;i<need;i++)x1[i]=ring1[(ringPos-need+i+ringLen)%ringLen];
+      const c0=chiSeries(x),c1=chiSeries(x1);
+      if(nCh<2||!c0.chi||!c1.chi){corrQ=0;corrV=0;corrLagMs=0;}
+      else{let same=true;const stp=Math.max(1,c0.chi.length>>6);for(let i=0;i<c0.chi.length;i+=stp){if(Math.abs(c0.chi[i]-c1.chi[i])>1e-7){same=false;break;}}
+        if(same){corrQ=-1;corrV=0;corrLagMs=0;}
+        else{const r=xcorrLag(c0.chi,c1.chi,c0.fsd,0.4);corrQ=r.corr;corrLagMs=r.lagS*1000;
+          const dx=Math.max(0.01,(parseFloat($('dxcm').value)||14)/100);
+          corrV=Math.abs(r.lagS)>2/c0.fsd ? dx/Math.abs(r.lagS) : 0;}}
+    }
+    const mono=nCh<2,dup=corrQ===-1;
+    const good=!mono&&!dup&&corrQ>0.3&&corrV>0&&corrV<30;
+    $('hflf').textContent=(good||corrLagMs)?corrLagMs.toFixed(0):'--';
+    $('idx').textContent=dup?'dup':(corrQ>=0?corrQ.toFixed(2):'--');
+    $('reading').textContent=good?corrV.toFixed(1):'--';
+    const st=good?(corrV>2?'flow':corrV>0.6?'light':'calm'):'idle';
+    $('state').className='state '+st;$('state').textContent=good?st:(mono?'1 mic only':dup?'mics identical':'low corr');
+    $('calibnote').textContent=mono?'⚠ only 1 mic channel here — correlation needs 2 distinct mics (try 2 phones)'
+      :dup?'⚠ the 2 channels are identical (mono) — correlation impossible on this device'
+      :'lag '+corrLagMs.toFixed(0)+' ms · corr '+corrQ.toFixed(2)+' · Δx '+$('dxcm').value+'cm';
+    log.push({t:Date.now(),hflf:+corrLagMs.toFixed(1),rel:0,idx:0,v:+corrV.toFixed(2),carr:+cf.toFixed(1),nz:+corrQ.toFixed(2),spr:0,vlf:0,lf:0,mid:0,hf:0});
+    if(log.length>6000)log=log.slice(-5000);if(log.length%10===0)persist();$('nlog').textContent=log.length;
+    setTimeout(loop,250);return;
+  }
 
   if(listenMode){                                    // LIGHT path: only the fast carrier → real-time, no CPU build-up
     const cf=fastCarrier(x);
@@ -457,7 +506,8 @@ async function start(){
   try{
     const MODE = $('mode') ? $('mode').value : 'measure';
     listenMode = (MODE==='listen');
-    if(listenMode)setupMotion();          // enable handling-detection (needs the Start tap for iOS permission)
+    corrMode = (MODE==='correlate');
+    if(listenMode||corrMode)setupMotion();          // enable handling-detection (needs the Start tap for iOS permission)
     ac=new (window.AudioContext||window.webkitAudioContext)();sr=ac.sampleRate;
     if(MODE==='emit'){                    // TX only: emit the tones, no mic, no analysis loop
       gain=ac.createGain();gain.gain.value=(parseFloat($('txvol').value)||18)/100;gain.connect(ac.destination);
@@ -471,27 +521,32 @@ async function start(){
     }
     ringLen=Math.ceil(WIN_S*sr);ring=new Float64Array(ringLen);ringPos=0;filled=0;
     totalSamples=0;lastTotal=0;
-    if(!listenMode){                     // Measure: this phone emits the tones. In Listen/RX another device emits.
+    if(!listenMode && !corrMode){        // Measure: this phone emits. In Listen/Correlate another device emits.
       gain=ac.createGain();gain.gain.value=0.03;gain.connect(ac.destination);
       for(const f of TONES){const o=ac.createOscillator();o.frequency.value=f;o.connect(gain);o.start();oscs.push(o);}
     }
-    mic=await navigator.mediaDevices.getUserMedia({audio:micConstraints()});
-    src=ac.createMediaStreamSource(mic);proc=ac.createScriptProcessor(4096,1,1);
-    proc.onaudioprocess=e=>{const d=e.inputBuffer.getChannelData(0);
-      for(let i=0;i<d.length;i++){ring[ringPos]=d[i];ringPos=(ringPos+1)%ringLen;if(filled<ringLen)filled++;}
+    if(corrMode)ring1=new Float64Array(ringLen);
+    const con = corrMode ? {echoCancellation:false,noiseSuppression:false,autoGainControl:false,channelCount:2,deviceId:chosenMic?{exact:chosenMic}:undefined} : micConstraints();
+    mic=await navigator.mediaDevices.getUserMedia({audio:con});
+    src=ac.createMediaStreamSource(mic);proc=ac.createScriptProcessor(4096, corrMode?2:1, 1);
+    proc.onaudioprocess=e=>{const ib=e.inputBuffer,d=ib.getChannelData(0);
+      if(corrMode){nCh=ib.numberOfChannels;const d1=nCh>1?ib.getChannelData(1):d;
+        for(let i=0;i<d.length;i++){ring[ringPos]=d[i];ring1[ringPos]=d1[i];ringPos=(ringPos+1)%ringLen;if(filled<ringLen)filled++;}}
+      else{for(let i=0;i<d.length;i++){ring[ringPos]=d[i];ringPos=(ringPos+1)%ringLen;if(filled<ringLen)filled++;}}
       totalSamples+=d.length;};
     src.connect(proc);proc.connect(ac.destination);
     listMics();                          // now that we have permission, labels are available
     try{if('wakeLock'in navigator){wakeLock=await navigator.wakeLock.request('screen');}}catch(e){}
     running=true;$('go').textContent='Stop';$('go').className='go stop';$('note').hidden=true;setStatus(true,'live');
-    if(listenMode){ setTimeout(beginZero, WIN_S*1000); }   // RX: no auto-level (can't control the remote emitter); just zero the calm HF
-    else { setTimeout(beginLevel, WIN_S*1000); }           // Measure: fill, auto-set volume, then zero
+    if(listenMode){ setTimeout(beginZero, WIN_S*1000); }   // RX: no auto-level; just zero the calm HF
+    else if(!corrMode){ setTimeout(beginLevel, WIN_S*1000); }   // Measure: fill, auto-set volume, then zero
     showMicSettings();
-    $('hflfk').textContent = listenMode ? 'width Hz' : 'HF band';
-    $('idxk').textContent = listenMode ? 'Δ Hz' : 'index';
-    $('un').textContent = listenMode ? 'Hz · spectral width' : 'm/s est.';
-    $('gwrap').hidden = listenMode; $('spectrum').hidden = !listenMode;   // hero = live spectrum in Listen mode
+    $('hflfk').textContent = corrMode?'lag ms':(listenMode ? 'width Hz' : 'HF band');
+    $('idxk').textContent = corrMode?'corr':(listenMode ? 'Δ Hz' : 'index');
+    $('un').textContent = corrMode?'m/s (auto)':(listenMode ? 'Hz · spectral width' : 'm/s est.');
+    $('gwrap').hidden = listenMode; $('spectrum').hidden = !listenMode;   // hero = live spectrum only in Listen
     if(listenMode){$('vrow').hidden=false;$('note').hidden=false;$('note').textContent='RX: another device emits. Keep ~30-50 cm apart, open air between. Carrier wants > -45. · '+($('note').textContent||'');}
+    if(corrMode){$('dxrow').hidden=false;$('note').hidden=false;$('note').textContent='Correlate: needs 2 distinct mics + another device emitting. Δx = mic spacing ALONG the wind. Keep phone fixed, long-axis into the wind. · '+($('note').textContent||'');}
     $('state').className='state zero';$('state').textContent='filling…';loop();
   }catch(err){$('note').hidden=false;
     $('note').innerHTML='<b>Microphone unavailable here.</b> Preview windows block the mic. Host over HTTPS (GitHub Pages, or drop at <code>app.netlify.com/drop</code>), open in Chrome, tap Start. ('+err.name+')';}
@@ -499,7 +554,7 @@ async function start(){
 function stop(){running=false;oscs.forEach(o=>{try{o.stop()}catch(e){}});oscs=[];
   if(wakeLock){try{wakeLock.release()}catch(e){}wakeLock=null;}
   if(proc)proc.disconnect();if(src)src.disconnect();if(mic)mic.getTracks().forEach(t=>t.stop());if(ac)ac.close();
-  $('txrow').hidden=true;$('vrow').hidden=true;$('gwrap').hidden=false;$('spectrum').hidden=true;
+  $('txrow').hidden=true;$('vrow').hidden=true;$('dxrow').hidden=true;$('gwrap').hidden=false;$('spectrum').hidden=true;
   persist();$('go').textContent='Start';$('go').className='go';$('state').className='state idle';$('state').textContent='idle';setStatus(false,'idle');}
 $('go').onclick=()=>running?stop():start();
 $('zero').onclick=()=>{if(running)beginZero();};
