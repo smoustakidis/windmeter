@@ -75,7 +75,7 @@ canvas{width:100%;height:66px;flex-shrink:0;background:var(--panel);border:1px s
     <div class="state idle" id="state">idle</div>
     <div class="strip">
       <div class="cell"><div class="k">index</div><div class="v" id="idx">--</div></div>
-      <div class="cell"><div class="k">HF band</div><div class="v" id="hflf">--</div></div>
+      <div class="cell"><div class="k" id="hflfk">HF band</div><div class="v" id="hflf">--</div></div>
       <div class="cell"><div class="k">carrier</div><div class="v" id="carr">--</div></div>
       <div class="cell"><div class="k">logged</div><div class="v" id="nlog">0</div></div>
     </div>
@@ -198,7 +198,7 @@ function loop(){
     const cf=fastCarrier(x);
     $('carr').textContent=isFinite(cf)?cf.toFixed(0):'--';
     if(!isFinite(cf)||cf<-60){$('reading').textContent='--';$('hflf').textContent='--';$('state').className='state idle';$('state').textContent='no signal';$('calibnote').textContent='no tone — move closer to the emitter or raise its volume';setTimeout(loop,300);return;}
-    last=cf;$('hflf').textContent=cf.toFixed(0);
+    last=cf;
     if(zeroing){
       zeroCarrBuf.push(cf);if(zeroCarrBuf.length>16)zeroCarrBuf.shift();
       const el=(performance.now()-zeroStart)/1000,w=zeroCarrBuf.slice(-8);
@@ -228,6 +228,7 @@ function loop(){
     hist.push(idx);if(hist.length>188)hist.shift();drawSpark(col);
     vtick++;
     if(vtick%8===0){const vp=vortexPeak(x);vPeakHz=vp.hz;vRatio=vp.ratio;}   // ~every 2 s: dominant flicker (vortex) freq
+    $('hflf').textContent = vPeakHz>0 ? vPeakHz.toFixed(0) : '--';            // "peak Hz" cell
     const rodD=Math.max(0.2,parseFloat($('rodD').value)||1);
     const vVort = vPeakHz>0 ? vPeakHz*(rodD/100)/ST : 0;
     $('calibnote').textContent = vPeakHz>0
@@ -407,6 +408,7 @@ async function start(){
     if(listenMode){ setTimeout(beginZero, WIN_S*1000); }   // RX: no auto-level (can't control the remote emitter); just zero the calm HF
     else { setTimeout(beginLevel, WIN_S*1000); }           // Measure: fill, auto-set volume, then zero
     showMicSettings();
+    $('hflfk').textContent = listenMode ? 'peak Hz' : 'HF band';
     if(listenMode){$('vrow').hidden=false;$('note').hidden=false;$('note').textContent='RX: another device emits. Keep ~30-50 cm apart, open air between. Carrier wants > -45. · '+($('note').textContent||'');}
     $('state').className='state zero';$('state').textContent='filling…';loop();
   }catch(err){$('note').hidden=false;
