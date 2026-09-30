@@ -39,7 +39,7 @@ svg{width:100%;height:100%;display:block}
 .cell{background:var(--panel);padding:10px 8px 12px;text-align:center;min-height:56px}
 .cell .k{font-size:9.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.6px}
 .cell .v{font-family:var(--mono);font-size:15px;font-weight:500;margin-top:3px;font-variant-numeric:tabular-nums}
-canvas{width:100%;height:66px;flex-shrink:0;background:var(--panel);border:1px solid var(--edge);border-radius:12px;display:block}
+canvas{width:100%;height:120px;flex-shrink:0;background:var(--panel);border:1px solid var(--edge);border-radius:12px;display:block}
 .go{appearance:none;border:none;border-radius:13px;font-family:var(--sans);font-size:17px;font-weight:600;
   padding:15px;cursor:pointer;background:var(--accent);color:#052019;letter-spacing:.3px}
 .go.stop{background:var(--bad);color:#25090a}
@@ -72,17 +72,17 @@ canvas{width:100%;height:66px;flex-shrink:0;background:var(--panel);border:1px s
       </svg>
       <div class="gval">
         <div class="num" id="reading">--</div>
-        <div class="un">m/s est.</div>
+        <div class="un" id="un">m/s est.</div>
       </div>
     </div>
     <div class="state idle" id="state">idle</div>
     <div class="strip">
-      <div class="cell"><div class="k">index</div><div class="v" id="idx">--</div></div>
+      <div class="cell"><div class="k" id="idxk">index</div><div class="v" id="idx">--</div></div>
       <div class="cell"><div class="k" id="hflfk">HF band</div><div class="v" id="hflf">--</div></div>
       <div class="cell"><div class="k">carrier</div><div class="v" id="carr">--</div></div>
       <div class="cell"><div class="k">logged</div><div class="v" id="nlog">0</div></div>
     </div>
-    <canvas id="spark" width="564" height="66"></canvas>
+    <canvas id="spark" width="564" height="120"></canvas>
   </div>
 
   <div class="cfg"><label for="mode">mode</label><select id="mode">
@@ -126,7 +126,7 @@ let lfFloor=null, vlfFloor=null, zeroLfBuf=[], zeroVlfBuf=[];
 let carrFloor=null, zeroCarrBuf=[], lastRel=null, vSmoothBuf=[], cfBuf=[], scintFloor=null;
 let chosenMic=null;
 let listenMode=false;
-let vtick=0, vPeakHz=0, vRatio=0, vWidth=0, widthFloor=null;
+let vtick=0, vPeakHz=0, vRatio=0, vWidth=0, widthFloor=null, widthHist=[];
 let motionLevel=0, lastAmag=null, motionOn=false;
 let cal={slope:0.30,custom:false};
 const $=id=>document.getElementById(id);
@@ -212,7 +212,7 @@ const std=a=>{if(a.length<2)return 0;const m=a.reduce((x,y)=>x+y,0)/a.length;ret
 function setStatus(live,txt){$('statusdot').className='dot'+(live?' live':'');$('statustxt').textContent=txt;}
 function beginLevel(){leveling=true;levelStart=performance.now();levelBegin=performance.now();zeroing=false;base=null;
   $('state').className='state zero';$('state').textContent='leveling…';$('reading').textContent='--';}
-function beginZero(){leveling=false;base=null;zeroing=true;zeroBuf=[];zeroNoiseBuf=[];noiseFloor=null;lastCarr=null;zeroLfBuf=[];zeroVlfBuf=[];lfFloor=null;vlfFloor=null;zeroCarrBuf=[];carrFloor=null;vSmoothBuf=[];cfBuf=[];scintFloor=null;widthFloor=null;vWidth=0;zeroStart=performance.now();
+function beginZero(){leveling=false;base=null;zeroing=true;zeroBuf=[];zeroNoiseBuf=[];noiseFloor=null;lastCarr=null;zeroLfBuf=[];zeroVlfBuf=[];lfFloor=null;vlfFloor=null;zeroCarrBuf=[];carrFloor=null;vSmoothBuf=[];cfBuf=[];scintFloor=null;widthFloor=null;vWidth=0;widthHist=[];zeroStart=performance.now();
   $('state').className='state zero';$('reading').textContent='--';}
 function loop(){
   if(!running)return;
@@ -251,19 +251,16 @@ function loop(){
     vSmoothBuf.push(v);if(vSmoothBuf.length>3)vSmoothBuf.shift();
     const vShow=vSmoothBuf.reduce((a,b)=>a+b,0)/vSmoothBuf.length;
     if(widthFloor!==null && vShow<CALM_V){widthFloor += ADAPT*(vWidth-widthFloor);}   // drift-track the calm width baseline
-    const idx=Math.max(0,Math.min(100,Math.round(vShow/8*100)));
-    $('reading').textContent=vShow.toFixed(1);$('idx').textContent=idx;
-    $('arc').style.strokeDashoffset=ARC_LEN*(1-idx/100);
-    let st='calm',lbl='calm';if(vShow>2){st='flow';lbl='flow';}else if(vShow>0.6){st='light';lbl='light';}
+    const aidx=Math.max(0,Math.min(100,Math.round(relW/25*100)));
+    $('reading').textContent=vWidth.toFixed(1);$('idx').textContent=relW.toFixed(1);   // big = width Hz, cell = Δ Hz
+    $('arc').style.strokeDashoffset=ARC_LEN*(1-aidx/100);
+    let st='calm',lbl='calm';if(relW>10){st='flow';lbl='flow';}else if(relW>DEADW){st='light';lbl='light';}
     $('state').className='state '+st;$('state').textContent=lbl;
     const col=st==='flow'?'var(--bad)':st==='light'?'var(--warn)':'var(--accent)';$('arc').setAttribute('stroke',col);
     $('hflf').textContent = vWidth>0?vWidth.toFixed(0):'--';                      // "width Hz" cell
-    const rodD=Math.max(0.2,parseFloat($('rodD').value)||1);
-    const good=vRatio>PROM && vPeakHz>0;
-    const vVort=good?vPeakHz*(rodD/100)/ST:0;
-    $('calibnote').textContent='width '+vWidth.toFixed(0)+' Hz (Δ'+relW.toFixed(0)+')'+(good?' · vortex '+vPeakHz.toFixed(0)+'→'+vVort.toFixed(1)+'m/s':'');
-    hist.push(idx);if(hist.length>188)hist.shift();drawSpark(col);
-    log.push({t:Date.now(),hflf:+vWidth.toFixed(1),rel:+relEff.toFixed(2),idx,v:+v.toFixed(2),carr:+cf.toFixed(1),nz:+vRatio.toFixed(1),spr:0,vlf:0,lf:0,mid:+drop.toFixed(2),hf:+vPeakHz.toFixed(1)});
+    $('calibnote').textContent='base '+(widthFloor!==null?widthFloor.toFixed(0):'--')+' Hz · now '+vWidth.toFixed(0)+' Hz · Δ '+relW.toFixed(0)+' Hz';
+    widthHist.push(vWidth);if(widthHist.length>188)widthHist.shift();drawWidth();
+    log.push({t:Date.now(),hflf:+vWidth.toFixed(1),rel:+relW.toFixed(2),idx:aidx,v:+v.toFixed(2),carr:+cf.toFixed(1),nz:+vRatio.toFixed(1),spr:0,vlf:0,lf:0,mid:+drop.toFixed(2),hf:+vPeakHz.toFixed(1)});
     if(log.length>6000)log=log.slice(-5000);
     if(log.length%10===0)persist();$('nlog').textContent=log.length;
     setTimeout(loop,250);return;
@@ -358,6 +355,16 @@ function drawSpark(col){const c=$('spark'),g=c.getContext('2d'),W=c.width,H=c.he
   for(let y=0;y<=100;y+=50){const yy=H-y/100*(H-6)-3;g.beginPath();g.moveTo(0,yy);g.lineTo(W,yy);g.stroke();}
   if(hist.length<2)return;g.strokeStyle=col||'#37c9a6';g.lineWidth=2;g.beginPath();
   hist.forEach((v,i)=>{const x=i/187*W,y=H-v/100*(H-6)-3;i?g.lineTo(x,y):g.moveTo(x,y);});g.stroke();}
+function drawWidth(){const c=$('spark'),g=c.getContext('2d'),W=c.width,H=c.height;
+  g.clearRect(0,0,W,H);
+  if(widthHist.length<2){g.fillStyle='#4d6459';g.font='12px monospace';g.fillText('collecting…',8,18);return;}
+  let mn=Math.min(...widthHist),mx=Math.max(...widthHist);
+  if(widthFloor!==null){mn=Math.min(mn,widthFloor);mx=Math.max(mx,widthFloor);}
+  const pad=(mx-mn)*0.15+1;mn-=pad;mx+=pad;const rng=mx-mn||1;const Y=v=>H-(v-mn)/rng*(H-4)-2;
+  if(widthFloor!==null){const yb=Y(widthFloor);g.strokeStyle='#5f7a6f';g.setLineDash([4,3]);g.lineWidth=1;g.beginPath();g.moveTo(0,yb);g.lineTo(W,yb);g.stroke();g.setLineDash([]);}
+  g.strokeStyle='#37c9a6';g.lineWidth=2;g.beginPath();const n=widthHist.length;
+  widthHist.forEach((v,i)=>{const x=i/(n-1)*W,y=Y(v);i?g.lineTo(x,y):g.moveTo(x,y);});g.stroke();
+  g.fillStyle='#7d938a';g.font='11px monospace';g.fillText(mx.toFixed(0)+' Hz',6,14);g.fillText(mn.toFixed(0)+' Hz',6,H-6);}
 function persist(){try{localStorage.setItem(LOG_KEY,JSON.stringify(log.slice(-5000)));}catch(e){}}
 function calibNote(){$('calibnote').textContent=cal.custom?('calibrated: '+cal.slope.toFixed(3)+' m/s per dB · Re-zero in calm'):'on Start it measures 5 s of calm as zero · keep still';}
 function micConstraints(){return {
@@ -439,6 +446,8 @@ async function start(){
     else { setTimeout(beginLevel, WIN_S*1000); }           // Measure: fill, auto-set volume, then zero
     showMicSettings();
     $('hflfk').textContent = listenMode ? 'width Hz' : 'HF band';
+    $('idxk').textContent = listenMode ? 'Δ Hz' : 'index';
+    $('un').textContent = listenMode ? 'Hz · spectral width' : 'm/s est.';
     if(listenMode){$('vrow').hidden=false;$('note').hidden=false;$('note').textContent='RX: another device emits. Keep ~30-50 cm apart, open air between. Carrier wants > -45. · '+($('note').textContent||'');}
     $('state').className='state zero';$('state').textContent='filling…';loop();
   }catch(err){$('note').hidden=false;
