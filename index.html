@@ -107,7 +107,7 @@ const NF=[19500,20600,21600];                       // off-tone probes (nothing 
 const LF=[1,5], HF=[20,80], DEC=64, WIN_S=4, ZERO_S=5, SPAN=17, DEAD=3;
 const NOISE_R=3, CARR_JUMP=3, SPREAD_MAX=12, LF_GATE=12;   // sound-rejection thresholds (LF/VLF spike over calm = sound → hold)
 const SCINT_W=1.5, ADAPT=0.03, CALM_V=0.3;                 // bistatic: scintillation weight, baseline drift-tracking rate, calm threshold
-const ST=0.2, VLO=8, VHI=200;                              // vortex-shedding: Strouhal number, peak-search band (Hz)
+const ST=0.2, VLO=8, VHI=200, PROM=8;                      // vortex: Strouhal, peak-search band (Hz), min prominence (peak/median) to accept a line
 const CAL_KEY="windmeter_cal_v2", LOG_KEY="windmeter_log_v2", MIC_KEY="windmeter_mic";
 const ARC_LEN=377;
 const TARGET_CARR=-30, LEVEL_S=4, G_MIN=0.002, G_MAX=0.7, LEVEL_MAX_S=14;   // auto-level: drive carrier to ~-30 dBFS (more headroom for weak high-freq emission)
@@ -164,10 +164,11 @@ function vortexPeak(x){                               // dominant flicker freque
     for(let i=0;i<n;i++){const w=0.5-0.5*Math.cos(2*Math.PI*i/(n-1));re[i]=(env[i]/mean-1)*w;}
     fft(re,im);for(let k=0;k<(PW>>1);k++)P[k]+=re[k]*re[k]+im[k]*im[k];}
   if(!P)return {hz:0,ratio:0};
-  const df=fsd/PW;let bestk=-1,bestv=0,sum=0,cnt=0;
-  for(let k=1;k<P.length;k++){const fr=k*df;if(fr<VLO||fr>VHI)continue;sum+=P[k];cnt++;if(P[k]>bestv){bestv=P[k];bestk=k;}}
-  const mean=cnt?sum/cnt:1e-12;
-  return {hz:bestk>0?bestk*df:0, ratio:bestv/(mean+1e-12)};}   // ratio = peak prominence (a real line is >~4)
+  const df=fsd/PW;let bestk=-1,bestv=0;const band=[];
+  for(let k=1;k<P.length;k++){const fr=k*df;if(fr<VLO||fr>VHI)continue;band.push(P[k]);if(P[k]>bestv){bestv=P[k];bestk=k;}}
+  if(!band.length)return {hz:0,ratio:0};
+  band.sort((a,b)=>a-b);const medv=band[band.length>>1]||1e-12;
+  return {hz:bestk>0?bestk*df:0, ratio:bestv/(medv+1e-12)};}   // prominence = peak / median(band); a real shedding line is sharp (high)
 function metrics(env,fsd){const n=env.length;let mean=0;for(let i=0;i<n;i++)mean+=env[i];mean/=n;
   const carrDb=20*Math.log10(mean+1e-12);let P=1;while(P<n)P<<=1;
   const re=new Float64Array(P),im=new Float64Array(P);
@@ -228,12 +229,13 @@ function loop(){
     hist.push(idx);if(hist.length>188)hist.shift();drawSpark(col);
     vtick++;
     if(vtick%8===0){const vp=vortexPeak(x);vPeakHz=vp.hz;vRatio=vp.ratio;}   // ~every 2 s: dominant flicker (vortex) freq
-    $('hflf').textContent = vPeakHz>0 ? vPeakHz.toFixed(0) : '--';            // "peak Hz" cell
+    const good = vRatio>PROM && vPeakHz>0;                                    // only trust a SHARP line (rejects broadband noise)
+    $('hflf').textContent = good ? vPeakHz.toFixed(0) : '--';                 // "peak Hz" cell
     const rodD=Math.max(0.2,parseFloat($('rodD').value)||1);
-    const vVort = vPeakHz>0 ? vPeakHz*(rodD/100)/ST : 0;
-    $('calibnote').textContent = vPeakHz>0
-      ? 'vortex '+vPeakHz.toFixed(0)+' Hz'+(vRatio>4?' ✓':' (weak)')+' → '+vVort.toFixed(1)+' m/s  (⌀'+rodD+'cm)'
-      : 'live carrier reading · put a rod in the beam for vortex m/s';
+    const vVort = good ? vPeakHz*(rodD/100)/ST : 0;
+    $('calibnote').textContent = good
+      ? 'vortex '+vPeakHz.toFixed(0)+' Hz ✓ → '+vVort.toFixed(1)+' m/s (⌀'+rodD+'cm)'
+      : 'no clear vortex line (prom '+vRatio.toFixed(0)+') — add/adjust a rod in the beam';
     log.push({t:Date.now(),hflf:0,rel:+sig.toFixed(2),idx,v:+v.toFixed(2),carr:+cf.toFixed(1),nz:+vRatio.toFixed(1),spr:+scint.toFixed(2),vlf:0,lf:0,mid:+drop.toFixed(2),hf:+vPeakHz.toFixed(1)});
     if(log.length>6000)log=log.slice(-5000);
     if(log.length%10===0)persist();$('nlog').textContent=log.length;
