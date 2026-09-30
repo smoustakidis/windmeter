@@ -132,6 +132,8 @@ let chosenMic=null;
 let listenMode=false;
 let vtick=0, vPeakHz=0, vRatio=0, vWidth=0, widthFloor=null, widthHist=[];
 let specTones=null, specDf=0;
+let rawMag=null, rawF0=0, rawDf=0;
+const RAWLO=18400, RAWHI=22600;
 let motionLevel=0, lastAmag=null, motionOn=false;
 let cal={slope:0.30,custom:false};
 const $=id=>document.getElementById(id);
@@ -251,7 +253,8 @@ function loop(){
       setTimeout(loop,250);return;
     }
     vtick++;
-    if(vtick%4===0){const ff=fluctFeatures(x);vWidth=ff.widthHz;vPeakHz=ff.peakHz;vRatio=ff.prom;}  // ~1 s: PRIMARY spectral width + vortex peak
+    if(vtick%8===0){const ff=fluctFeatures(x);vWidth=ff.widthHz;vPeakHz=ff.peakHz;vRatio=ff.prom;}  // ~2 s: width/peak metrics
+    if(vtick%8===4){rawSpectrum(x);}                                                                // ~2 s (staggered): raw carrier spectrum
     const drop=carrFloor!==null?(carrFloor-cf):0;                                 // carrier drop (secondary diagnostic)
     const relW = widthFloor!==null ? (vWidth-widthFloor) : 0;                     // PRIMARY: wind widens the flicker spectrum (level-independent)
     const relEff = Math.max(0, relW - DEADW);
@@ -268,7 +271,7 @@ function loop(){
     const col=st==='flow'?'var(--bad)':st==='light'?'var(--warn)':'var(--accent)';$('arc').setAttribute('stroke',col);
     $('hflf').textContent = vWidth>0?vWidth.toFixed(0):'--';                      // "width Hz" cell
     $('calibnote').textContent='base '+(widthFloor!==null?widthFloor.toFixed(0):'--')+' Hz · now '+vWidth.toFixed(0)+' Hz · Δ '+relW.toFixed(0)+' Hz';
-    widthHist.push(vWidth);if(widthHist.length>188)widthHist.shift();drawWidth();drawSpectrum();
+    widthHist.push(vWidth);if(widthHist.length>188)widthHist.shift();drawWidth();drawRaw();
     log.push({t:Date.now(),hflf:+vWidth.toFixed(1),rel:+relW.toFixed(2),idx:aidx,v:+v.toFixed(2),carr:+cf.toFixed(1),nz:+vRatio.toFixed(1),spr:0,vlf:0,lf:0,mid:+drop.toFixed(2),hf:+vPeakHz.toFixed(1)});
     if(log.length>6000)log=log.slice(-5000);
     if(log.length%10===0)persist();$('nlog').textContent=log.length;
@@ -375,6 +378,24 @@ function drawWidth(){const c=$('spark'),g=c.getContext('2d'),W=c.width,H=c.heigh
   widthHist.forEach((v,i)=>{const x=i/(n-1)*W,y=Y(v);i?g.lineTo(x,y):g.moveTo(x,y);});g.stroke();
   g.fillStyle='#7d938a';g.font='11px monospace';g.fillText(mx.toFixed(0)+' Hz',6,14);g.fillText(mn.toFixed(0)+' Hz',6,H-6);}
 const SPCOLS=['#37c9a6','#e2b155','#e07a5a','#6ea8e0'];
+function rawSpectrum(x){                              // raw acoustic spectrum around the 4 carriers → see the spikes + wind broadening
+  const n=Math.min(x.length,Math.floor(0.6*sr));if(n<1024)return;
+  let PW=1;while(PW<n)PW<<=1;const re=new Float64Array(PW),im=new Float64Array(PW),off=x.length-n;
+  for(let i=0;i<n;i++){const w=0.5-0.5*Math.cos(2*Math.PI*i/(n-1));re[i]=x[off+i]*w;}
+  fft(re,im);const df=sr/PW,k0=Math.floor(RAWLO/df),k1=Math.ceil(RAWHI/df);
+  const mag=new Float64Array(k1-k0);for(let k=k0;k<k1;k++)mag[k-k0]=Math.sqrt(re[k]*re[k]+im[k]*im[k]);
+  rawMag=mag;rawF0=k0*df;rawDf=df;}
+function drawRaw(){const c=$('spectrum'),g=c.getContext('2d'),W=c.width,H=c.height;
+  g.clearRect(0,0,W,H);
+  if(!rawMag){g.fillStyle='#4d6459';g.font='13px monospace';g.fillText('collecting spectrum…',12,26);return;}
+  const Ha=H-18,DR=55,N=rawMag.length;let mx=1e-12;for(let i=0;i<N;i++)if(rawMag[i]>mx)mx=rawMag[i];
+  const fspan=RAWHI-RAWLO, Xf=f=>(f-RAWLO)/fspan*W, Yv=v=>2+Ha*(1-(Math.max(-DR,20*Math.log10((v+1e-12)/mx))+DR)/DR);
+  g.strokeStyle='#1b2823';g.lineWidth=1;g.fillStyle='#4d6459';g.font='10px monospace';
+  for(let f=19000;f<=22000;f+=1000){const x=Xf(f);g.beginPath();g.moveTo(x,0);g.lineTo(x,Ha+2);g.stroke();g.fillText((f/1000)+'k',x+2,H-4);}
+  for(let ti=0;ti<TONES.length;ti++){const x=Xf(TONES[ti]);g.strokeStyle=SPCOLS[ti];g.setLineDash([2,3]);g.lineWidth=1;g.beginPath();g.moveTo(x,0);g.lineTo(x,Ha);g.stroke();g.setLineDash([]);}
+  g.strokeStyle='#37c9a6';g.lineWidth=1.5;g.beginPath();
+  for(let i=0;i<N;i++){const x=(rawF0+i*rawDf-RAWLO)/fspan*W,y=Yv(rawMag[i]);i?g.lineTo(x,y):g.moveTo(x,y);}g.stroke();
+  g.fillStyle='#7d938a';g.font='11px monospace';g.fillText('raw spectrum 18.4–22.6 kHz · wind broadens each spike',8,14);}
 function drawSpectrum(){const c=$('spectrum'),g=c.getContext('2d'),W=c.width,H=c.height;
   g.clearRect(0,0,W,H);
   if(!specTones||!specDf){g.fillStyle='#4d6459';g.font='13px monospace';g.fillText('collecting spectrum…',12,26);return;}
